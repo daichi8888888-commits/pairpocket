@@ -63,10 +63,45 @@ async function view(tab = 'home') {
   const { data: p } = await supabase.from('pairs').select('name,invite_code').eq('id', pair).single();
   const name = (id: string) => members.find(x => x.user_id === id)?.profiles?.display_name || balances.find(x => x.user_id === id)?.display_name || 'メンバー';
   const total = expenses.reduce((s, e) => s + e.amount, 0);
-  const b = balances.find(x => Number(x.balance) > 0) || balances[0];
-  const amount = Math.abs(Number(b?.balance || 0));
-  const receiver = b?.user_id;
-  const sender = members.find(x => x.user_id !== receiver)?.user_id;
+
+  // --- 修正箇所：Supabaseの残高ビューに頼らず、フロントエンドで直接正確な残高を計算する ---
+  let bals: Record<string, number> = {};
+  members.forEach(m => bals[m.user_id] = 0);
+
+  // 1. 支出（入力した値＝そのまま相手への請求額として計算）
+  expenses.forEach(e => {
+    const pId = e.payer_id;
+    const oId = members.find(m => m.user_id !== pId)?.user_id;
+    if (pId && bals[pId] !== undefined) bals[pId] += Number(e.amount);
+    if (oId && bals[oId] !== undefined) bals[oId] -= Number(e.amount);
+  });
+
+  // 2. 精算履歴（精算した分だけ残高を相殺）
+  settlements.forEach(s => {
+    const fId = s.from_user_id;
+    const tId = s.to_user_id;
+    if (fId && bals[fId] !== undefined) bals[fId] += Number(s.amount);
+    if (tId && bals[tId] !== undefined) bals[tId] -= Number(s.amount);
+  });
+
+  let amount = 0;
+  let receiver = members[0]?.user_id;
+  let sender = members[1]?.user_id;
+
+  if (members.length === 2) {
+    const u1 = members[0].user_id;
+    const u2 = members[1].user_id;
+    if (bals[u1] > 0) {
+      receiver = u1;
+      sender = u2;
+      amount = bals[u1];
+    } else {
+      receiver = u2;
+      sender = u1;
+      amount = Math.abs(bals[u2] || 0);
+    }
+  }
+  // ------------------------------------------------------------------------------------
 
   app.innerHTML = `<main class="app"><div class="top"><div><div class="muted">ふたりのお金</div><h1>${esc(p?.name || 'PairPocket')}</h1></div></div><section id="home" class="${tab === 'home' ? '' : 'hide'}"><div class="card hero"><div class="muted">合計支出</div><div class="big">${yen(total)}</div><div class="grid">${balances.map(x => `<div class="mini"><div class="muted">${esc(x.display_name)}</div><b>${yen(Number(x.paid_amount))}</b></div>`).join('')}</div></div><div class="card"><div class="muted">現在の精算</div>${members.length < 2 ? '<h2>相手の参加待ち</h2>' : amount < 1 ? '<div class="settled">精算はありません</div>' : `<h2>${esc(name(sender))} → ${esc(name(receiver))}</h2><div class="big">${yen(amount)}</div><button id="settle" class="settle">${yen(amount)}を精算済みにする</button>`}</div><button id="add" class="primary full">＋ 金額を追加</button></section><section id="history" class="${tab === 'history' ? '' : 'hide'}"><div class="card"><h2>支出履歴</h2>${expenses.map(e => `<div class="expense"><div><b>${esc(e.title)}</b><div class="muted">${esc(name(e.payer_id))}・${e.expense_date}</div></div><div><b>${yen(e.amount)}</b> <button class="del" data-id="${e.id}">削除</button></div></div>`).join('') || '<p class="muted">まだありません</p>'}</div><div class="card"><h2>精算履歴</h2>${settlements.map(s => `<div class="expense"><div><b>${esc(name(s.from_user_id))} → ${esc(name(s.to_user_id))}</b><div class="muted">${new Date(s.settled_at).toLocaleDateString('ja-JP')}</div></div><b>${yen(s.amount)}</b></div>`).join('') || '<p class="muted">まだありません</p>'}</div></section><section id="settings" class="${tab === 'settings' ? '' : 'hide'}"><div class="card"><h2>招待コード</h2><div class="big">${esc(p?.invite_code)}</div><p>${members.length}/2人</p></div><button id="out" class="ghost full">ログアウト</button></section><section id="entry" class="card hide"><div class="top"><div><div class="muted">内容なしでも登録可能</div><h2>金額を追加</h2></div><button id="cancel" class="ghost">×</button></div><input id="title" class="field" placeholder="内容（任意）"><label class="muted">金額または計算式</label><div class="money"><span>¥</span><input id="amount" inputmode="decimal" placeholder="1200+350"></div><div id="result" class="result">計算結果：¥0</div><div class="quick"><button data-plus="100">+100</button><button data-plus="500">+500</button><button data-plus="1000">+1,000</button><button id="clear">クリア</button></div><button id="split" class="split">÷ 2人で割り勘</button><label class="muted">支払った人</label><div class="payer-buttons">${members.map((m, i) => `<button type="button" class="payer-btn ${i === 0 ? 'selected' : ''}" data-payer="${m.user_id}">${esc(name(m.user_id))}</button>`).join('')}</div><input id="payer" type="hidden" value="${members[0]?.user_id || ''}"><label class="muted">カテゴリー</label><select id="cat" class="field"><option value="" selected>カテゴリーなし</option>${['食費', '外食', '生活', '家賃', '光熱費', '交通', '娯楽', '旅行', 'その他'].map(x => `<option value="${x}">${x}</option>`).join('')}</select><button id="save" class="primary full">この金額を追加</button></section><nav class="tabs"><button data-tab="home">ホーム</button><button data-tab="history">履歴</button><button data-tab="settings">設定</button></nav></main>`;
   wire({ amount, sender, receiver });
@@ -173,10 +208,7 @@ supabase.auth.onAuthStateChange((event, session) => {
   if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
     if (session && !uid) boot();
   } else if (event === 'SIGNED_OUT') {
-    uid = '';
-    pair = '';
-    authView();
+    uid = ''; pair = ''; authView();
   }
 });
-
 boot();
