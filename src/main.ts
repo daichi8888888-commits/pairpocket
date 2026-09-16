@@ -64,12 +64,18 @@ async function load() {
 async function view(tab = 'home') {
   const { data: p } = await supabase.from('pairs').select('name,invite_code').eq('id', pair).single();
   const name = (id: string) => members.find(x => x.user_id === id)?.profiles?.display_name || balances.find(x => x.user_id === id)?.display_name || 'メンバー';
-  const total = expenses.reduce((s, e) => s + e.amount, 0);
+  
+  // 削除済みの履歴を除外して合計と残高を計算
+  const total = expenses.reduce((s, e) => {
+    if (typeof e.title === 'string' && e.title.startsWith('[削除済]')) return s;
+    return s + e.amount;
+  }, 0);
 
   let bals: Record<string, number> = {};
   members.forEach(m => bals[m.user_id] = 0);
 
   expenses.forEach(e => {
+    if (typeof e.title === 'string' && e.title.startsWith('[削除済]')) return; // 計算から除外
     const pId = e.payer_id;
     const oId = members.find(m => m.user_id !== pId)?.user_id;
     if (pId && bals[pId] !== undefined) bals[pId] += Number(e.amount);
@@ -108,10 +114,11 @@ async function view(tab = 'home') {
 
   app.innerHTML = `
     <style>
-      /* iPhone 16/17 セーフエリア対応 */
+      /* iPhone画面＆はみ出し対策 */
       .app { 
         padding-top: max(20px, env(safe-area-inset-top)) !important; 
         padding-bottom: max(100px, calc(env(safe-area-inset-bottom) + 80px)) !important; 
+        overflow-x: hidden;
       }
       .tabs { 
         padding-bottom: max(10px, env(safe-area-inset-bottom)) !important; 
@@ -119,9 +126,15 @@ async function view(tab = 'home') {
       
       .history-scroll { max-height: 50vh; overflow-y: auto; padding-right: 5px; overscroll-behavior: contain; }
       .calc-buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 8px; margin-bottom: 12px; }
-      .calc-buttons button { background: #eaf2ee; color: #2c604f; font-size: 20px; padding: 8px; font-weight: 800; }
+      .calc-buttons button { background: #eaf2ee; color: #2c604f; font-size: 20px; padding: 8px; font-weight: 800; cursor: pointer; }
       .deleted-log { opacity: 0.5; background: #f9f9f9; padding: 10px; margin: 4px 0; border-radius: 8px; }
       .deleted-badge { color: #d9534f; font-weight: 800; font-size: 11px; border: 1px solid #d9534f; padding: 1px 4px; border-radius: 4px; margin-right: 4px; display: inline-block; }
+      
+      /* はみ出し防止用フレックス調整 */
+      .expense { display: flex; justify-content: space-between; gap: 10px; width: 100%; align-items: flex-start; }
+      .expense-left { flex: 1; min-width: 0; }
+      .expense-right { text-align: right; white-space: nowrap; margin-left: 10px; flex-shrink: 0; }
+      .break-text { word-break: break-all; }
     </style>
     <main class="app">
       <div class="top" style="margin-top: 10px;">
@@ -150,27 +163,25 @@ async function view(tab = 'home') {
         <div class="card history-scroll">
           <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0; z-index: 1;">支出履歴</h2>
           ${filteredExpenses.map(e => {
-            // [削除済] amount::deleter_uid::title の形式をパース
+            // [削除済] deleter_uid::title の形式
             const isDel = typeof e.title === 'string' && e.title.startsWith('[削除済]');
             let displayTitle = e.title;
-            let displayAmount = e.amount;
             let delName = '';
             if (isDel) {
               const parts = e.title.replace('[削除済] ', '').split('::');
-              displayAmount = Number(parts[0]);
-              delName = name(parts[1]); // 削除した人の名前
-              displayTitle = parts.slice(2).join('::');
+              delName = name(parts[0]); 
+              displayTitle = parts.slice(1).join('::');
             }
             return `<div class="expense ${isDel ? 'deleted-log' : ''}">
-              <div>
-                ${isDel ? `<del style="color:#888;"><b>${esc(displayTitle)}</b></del>` : `<b>${esc(displayTitle)}</b>`}
-                <div class="muted" style="margin-top: 3px;">
+              <div class="expense-left">
+                ${isDel ? `<del style="color:#888;"><b class="break-text">${esc(displayTitle)}</b></del>` : `<b class="break-text">${esc(displayTitle)}</b>`}
+                <div class="muted break-text" style="margin-top: 3px;">
                   ${isDel ? `<span class="deleted-badge">削除者: ${esc(delName)}</span>` : ''}
                   ${esc(name(e.payer_id))}・${e.expense_date}
                 </div>
               </div>
-              <div style="text-align: right;">
-                ${isDel ? `<del style="color:#888;"><b>${yen(displayAmount)}</b></del>` : `<b>${yen(displayAmount)}</b>`}
+              <div class="expense-right">
+                ${isDel ? `<del style="color:#888;"><b>${yen(e.amount)}</b></del>` : `<b>${yen(e.amount)}</b>`}
                 ${!isDel ? `<div style="margin-top: 4px;"><button class="del" data-id="${e.id}">削除</button></div>` : ''}
               </div>
             </div>`;
@@ -178,7 +189,15 @@ async function view(tab = 'home') {
         </div>
         <div class="card history-scroll">
           <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0; z-index: 1;">精算履歴</h2>
-          ${filteredSettlements.map(s => `<div class="expense"><div><b>${esc(name(s.from_user_id))} → ${esc(name(s.to_user_id))}</b><div class="muted">${new Date(s.settled_at).toLocaleDateString('ja-JP')}</div></div><b>${yen(s.amount)}</b></div>`).join('') || '<p class="muted">まだありません</p>'}
+          ${filteredSettlements.map(s => `<div class="expense">
+            <div class="expense-left">
+              <b class="break-text">${esc(name(s.from_user_id))} → ${esc(name(s.to_user_id))}</b>
+              <div class="muted">${new Date(s.settled_at).toLocaleDateString('ja-JP')}</div>
+            </div>
+            <div class="expense-right">
+              <b>${yen(s.amount)}</b>
+            </div>
+          </div>`).join('') || '<p class="muted">まだありません</p>'}
         </div>
       </section>
 
@@ -212,7 +231,8 @@ async function view(tab = 'home') {
         <label class="muted">金額または計算式</label>
         <div class="money">
           <span>¥</span>
-          <input id="amount" inputmode="decimal" placeholder="1200+350">
+          <!-- inputmode="numeric" にすることでスマホの数字専用キーボードを開きます -->
+          <input type="text" id="amount" inputmode="numeric" placeholder="1200+350">
         </div>
         
         <div class="calc-buttons">
@@ -282,23 +302,20 @@ function wire(state: any) {
     view('history');
   });
 
-  // キーボード落ちを防ぐ処理
-  const preventFocusLoss = (e: Event) => {
-    e.preventDefault();
-  };
-
+  // iOS Safari等でキーボードを極力維持するための処理
   const calcBtns = document.querySelectorAll('[data-op], [data-plus], #clear, #split');
   calcBtns.forEach((b: any) => {
-    b.addEventListener('mousedown', preventFocusLoss);
-    b.addEventListener('touchstart', preventFocusLoss, { passive: false });
+    b.addEventListener('mousedown', (e: Event) => {
+      e.preventDefault(); // タップによるフォーカス外れを防ぐ
+    });
   });
 
-  document.querySelectorAll('[data-op]').forEach((b: any) => b.onclick = () => {
+  document.querySelectorAll('[data-op]').forEach((b: any) => b.addEventListener('click', () => {
     const input = q('#amount');
     input.value += b.dataset.op;
     showCalc();
-    input.focus();
-  });
+    input.focus(); // 念のため再フォーカス
+  }));
 
   q('#updateNameBtn')?.addEventListener('click', async () => {
     const newName = val('#myName').trim();
@@ -336,12 +353,12 @@ function wire(state: any) {
   q('#cancel')?.addEventListener('click', () => view('home'));
   q('#amount')?.addEventListener('input', showCalc);
   
-  document.querySelectorAll('[data-plus]').forEach((b: any) => b.onclick = () => {
+  document.querySelectorAll('[data-plus]').forEach((b: any) => b.addEventListener('click', () => {
     const n = calc();
     q('#amount').value = String((Number.isFinite(n) ? n : 0) + Number(b.dataset.plus));
     showCalc();
     q('#amount').focus();
-  });
+  }));
   
   q('#clear')?.addEventListener('click', () => {
     q('#amount').value = '';
@@ -361,19 +378,17 @@ function wire(state: any) {
   q('#save')?.addEventListener('click', save);
   q('#settle')?.addEventListener('click', () => settle(state));
   
-  // 削除ボタンの処理（完全削除ではなく、更新で取り消し線を引く）
+  // 削除ボタン（金額はそのままでタイトルのみ更新し、DB制約エラーを回避）
   document.querySelectorAll('.del').forEach((b: any) => b.onclick = async () => {
     const id = b.dataset.id;
     const e = expenses.find(x => x.id === id);
     if(e) {
-      // 誰が削除したかを判別するため、uidを文字列内に埋め込む
-      const newTitle = '[削除済] ' + e.amount + '::' + uid + '::' + (e.title || '支出');
-      const { error } = await supabase.from('expenses').update({ amount: 0, title: newTitle }).eq('id', id);
+      const newTitle = '[削除済] ' + uid + '::' + (e.title || '支出');
+      const { error } = await supabase.from('expenses').update({ title: newTitle }).eq('id', id);
       
-      // Supabaseのセキュリティ設定(RLS)でUPDATEが禁止されている場合はエラーになる
       if (error) {
-        alert('削除（更新）に失敗しました。SupabaseのUPDATE権限を確認してください。\n' + error.message);
-        return; // エラー時は処理を中断し、勝手に消えないようにする
+        alert('削除に失敗しました。\n' + error.message);
+        return; 
       }
       
       await load();
@@ -411,7 +426,7 @@ async function save() {
   });
   if (error) return alert(error.message);
   await load();
-  view('home'); // 保存完了後はホームに戻る
+  view('home'); 
 }
 
 async function logout() {
