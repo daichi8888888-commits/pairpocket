@@ -108,14 +108,23 @@ async function view(tab = 'home') {
 
   app.innerHTML = `
     <style>
-      .history-scroll { max-height: 55vh; overflow-y: auto; padding-right: 5px; }
+      /* iPhone 16/17 セーフエリア対応 */
+      .app { 
+        padding-top: max(20px, env(safe-area-inset-top)) !important; 
+        padding-bottom: max(100px, calc(env(safe-area-inset-bottom) + 80px)) !important; 
+      }
+      .tabs { 
+        padding-bottom: max(10px, env(safe-area-inset-bottom)) !important; 
+      }
+      
+      .history-scroll { max-height: 50vh; overflow-y: auto; padding-right: 5px; overscroll-behavior: contain; }
       .calc-buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 8px; margin-bottom: 12px; }
       .calc-buttons button { background: #eaf2ee; color: #2c604f; font-size: 20px; padding: 8px; font-weight: 800; }
       .deleted-log { opacity: 0.5; background: #f9f9f9; padding: 10px; margin: 4px 0; border-radius: 8px; }
-      .deleted-badge { color: #d9534f; font-weight: 800; font-size: 11px; border: 1px solid #d9534f; padding: 1px 4px; border-radius: 4px; margin-right: 4px; }
+      .deleted-badge { color: #d9534f; font-weight: 800; font-size: 11px; border: 1px solid #d9534f; padding: 1px 4px; border-radius: 4px; margin-right: 4px; display: inline-block; }
     </style>
     <main class="app">
-      <div class="top">
+      <div class="top" style="margin-top: 10px;">
         <div><div class="muted">ふたりのお金</div><h1>${esc(p?.name || 'PairPocket')}</h1></div>
       </div>
       
@@ -139,31 +148,36 @@ async function view(tab = 'home') {
           </select>
         </div>
         <div class="card history-scroll">
-          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0;">支出履歴</h2>
+          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0; z-index: 1;">支出履歴</h2>
           ${filteredExpenses.map(e => {
-            // [削除済] マーカーを検知し、元の金額とタイトルを復元する処理
+            // [削除済] amount::deleter_uid::title の形式をパース
             const isDel = typeof e.title === 'string' && e.title.startsWith('[削除済]');
             let displayTitle = e.title;
             let displayAmount = e.amount;
+            let delName = '';
             if (isDel) {
               const parts = e.title.replace('[削除済] ', '').split('::');
               displayAmount = Number(parts[0]);
-              displayTitle = parts.slice(1).join('::');
+              delName = name(parts[1]); // 削除した人の名前
+              displayTitle = parts.slice(2).join('::');
             }
             return `<div class="expense ${isDel ? 'deleted-log' : ''}">
               <div>
                 ${isDel ? `<del style="color:#888;"><b>${esc(displayTitle)}</b></del>` : `<b>${esc(displayTitle)}</b>`}
-                <div class="muted">${isDel ? '<span class="deleted-badge">削除済</span>' : ''}${esc(name(e.payer_id))}・${e.expense_date}</div>
+                <div class="muted" style="margin-top: 3px;">
+                  ${isDel ? `<span class="deleted-badge">削除者: ${esc(delName)}</span>` : ''}
+                  ${esc(name(e.payer_id))}・${e.expense_date}
+                </div>
               </div>
-              <div>
+              <div style="text-align: right;">
                 ${isDel ? `<del style="color:#888;"><b>${yen(displayAmount)}</b></del>` : `<b>${yen(displayAmount)}</b>`}
-                ${!isDel ? `<button class="del" data-id="${e.id}">削除</button>` : ''}
+                ${!isDel ? `<div style="margin-top: 4px;"><button class="del" data-id="${e.id}">削除</button></div>` : ''}
               </div>
             </div>`;
           }).join('') || '<p class="muted">まだありません</p>'}
         </div>
         <div class="card history-scroll">
-          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0;">精算履歴</h2>
+          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0; z-index: 1;">精算履歴</h2>
           ${filteredSettlements.map(s => `<div class="expense"><div><b>${esc(name(s.from_user_id))} → ${esc(name(s.to_user_id))}</b><div class="muted">${new Date(s.settled_at).toLocaleDateString('ja-JP')}</div></div><b>${yen(s.amount)}</b></div>`).join('') || '<p class="muted">まだありません</p>'}
         </div>
       </section>
@@ -198,7 +212,6 @@ async function view(tab = 'home') {
         <label class="muted">金額または計算式</label>
         <div class="money">
           <span>¥</span>
-          <!-- inputmode="decimal" でスマホの数字キーボードを呼び出します -->
           <input id="amount" inputmode="decimal" placeholder="1200+350">
         </div>
         
@@ -269,7 +282,17 @@ function wire(state: any) {
     view('history');
   });
 
-  // 四則演算ボタンの処理。押した後に入力欄にフォーカスを戻してキーボードを維持します
+  // キーボード落ちを防ぐ処理
+  const preventFocusLoss = (e: Event) => {
+    e.preventDefault();
+  };
+
+  const calcBtns = document.querySelectorAll('[data-op], [data-plus], #clear, #split');
+  calcBtns.forEach((b: any) => {
+    b.addEventListener('mousedown', preventFocusLoss);
+    b.addEventListener('touchstart', preventFocusLoss, { passive: false });
+  });
+
   document.querySelectorAll('[data-op]').forEach((b: any) => b.onclick = () => {
     const input = q('#amount');
     input.value += b.dataset.op;
@@ -338,18 +361,19 @@ function wire(state: any) {
   q('#save')?.addEventListener('click', save);
   q('#settle')?.addEventListener('click', () => settle(state));
   
-  // 削除ボタンの処理
+  // 削除ボタンの処理（完全削除ではなく、更新で取り消し線を引く）
   document.querySelectorAll('.del').forEach((b: any) => b.onclick = async () => {
     const id = b.dataset.id;
     const e = expenses.find(x => x.id === id);
     if(e) {
-      // Supabaseの集計を狂わせないため金額を0にし、元の金額とタイトルを文字列で保存して復元する
-      const newTitle = '[削除済] ' + e.amount + '::' + (e.title || '支出');
+      // 誰が削除したかを判別するため、uidを文字列内に埋め込む
+      const newTitle = '[削除済] ' + e.amount + '::' + uid + '::' + (e.title || '支出');
       const { error } = await supabase.from('expenses').update({ amount: 0, title: newTitle }).eq('id', id);
       
-      // もしDBの設定でUPDATEが禁止されている場合は、強制的に物理削除する
+      // Supabaseのセキュリティ設定(RLS)でUPDATEが禁止されている場合はエラーになる
       if (error) {
-        await supabase.from('expenses').delete().eq('id', id);
+        alert('削除（更新）に失敗しました。SupabaseのUPDATE権限を確認してください。\n' + error.message);
+        return; // エラー時は処理を中断し、勝手に消えないようにする
       }
       
       await load();
@@ -387,7 +411,7 @@ async function save() {
   });
   if (error) return alert(error.message);
   await load();
-  view();
+  view('home'); // 保存完了後はホームに戻る
 }
 
 async function logout() {
