@@ -4,6 +4,7 @@ import { supabase } from './supabase';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 let uid = '', pair = '', members: any[] = [], expenses: any[] = [], balances: any[] = [], settlements: any[] = [];
 let currentMonth = 'all'; 
+let utilViewMode: 'trend' | 'average' = 'trend'; // グラフの切り替えステート
 
 const getToday = () => {
   const d = new Date();
@@ -13,6 +14,14 @@ const getToday = () => {
 
 const yen = (n: number) => `¥${Math.round(n).toLocaleString('ja-JP')}`;
 const esc = (s: any) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+
+// ISO時刻を YYYY/MM/DD HH:MM 形式にする関数
+const fmtTime = (raw: string) => {
+  if (!raw) return '';
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return raw;
+  return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
 
 async function boot() {
   const { data: { session } } = await supabase.auth.getSession();
@@ -55,9 +64,9 @@ function pairView(msg = '') {
 async function load() {
   const [m, e, b, s] = await Promise.all([
     supabase.from('pair_members').select('user_id,role,profiles(display_name)').eq('pair_id', pair),
-    supabase.from('expenses').select('*').eq('pair_id', pair).order('expense_date', { ascending: false }),
+    supabase.from('expenses').select('*').eq('pair_id', pair), // 並び替えはフロント側で一元管理する
     supabase.from('pair_balances').select('*').eq('pair_id', pair),
-    supabase.from('settlements').select('*').eq('pair_id', pair).order('settled_at', { ascending: false })
+    supabase.from('settlements').select('*').eq('pair_id', pair)
   ]);
   const er = m.error || e.error || b.error || s.error;
   if (er) return fail(er.message);
@@ -119,7 +128,7 @@ async function view(tab = 'home') {
   const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
   const utils = JSON.parse(localStorage.getItem(`utils_${pair}`) || '[]');
 
-  // 水道・光熱費グラフデータの計算
+  // --- 水道・光熱費グラフの生成処理 ---
   const utilsMap: Record<string, {water: number, energy: number}> = {};
   utils.forEach((u: any) => {
     if (!utilsMap[u.month]) utilsMap[u.month] = { water: 0, energy: 0 };
@@ -129,33 +138,110 @@ async function view(tab = 'home') {
   const sortedUtilMonths = Object.keys(utilsMap).sort();
   let maxUtilAmt = 1;
   sortedUtilMonths.forEach(m => {
-    const tot = utilsMap[m].water + utilsMap[m].energy;
-    if (tot > maxUtilAmt) maxUtilAmt = tot;
+    if (utilsMap[m].water > maxUtilAmt) maxUtilAmt = utilsMap[m].water;
+    if (utilsMap[m].energy > maxUtilAmt) maxUtilAmt = utilsMap[m].energy;
   });
 
-  // タイムラインの構築（新しい順に完全に並び替え）
+  let graphHtml = '';
+  if (sortedUtilMonths.length === 0) {
+    graphHtml = '<p class="muted" style="width:100%; text-align:center; padding: 20px 0;">データがありません</p>';
+  } else if (utilViewMode === 'trend') {
+    // 折れ線グラフ（SVG）
+    const width = 320; const height = 130;
+    const padX = 30; const padY = 20;
+    const usableW = width - padX * 2;
+    const usableH = height - padY * 2;
+    
+    const step = sortedUtilMonths.length > 1 ? usableW / (sortedUtilMonths.length - 1) : usableW / 2;
+    
+    const waterPts = sortedUtilMonths.map((m, i) => {
+      const x = sortedUtilMonths.length > 1 ? padX + i * step : padX + step;
+      const y = height - padY - (utilsMap[m].water / maxUtilAmt) * usableH;
+      return `${x},${y}`;
+    });
+    
+    const energyPts = sortedUtilMonths.map((m, i) => {
+      const x = sortedUtilMonths.length > 1 ? padX + i * step : padX + step;
+      const y = height - padY - (utilsMap[m].energy / maxUtilAmt) * usableH;
+      return `${x},${y}`;
+    });
+
+    const circlesHtml = sortedUtilMonths.map((m, i) => {
+      const x = sortedUtilMonths.length > 1 ? padX + i * step : padX + step;
+      const yw = height - padY - (utilsMap[m].water / maxUtilAmt) * usableH;
+      const ye = height - padY - (utilsMap[m].energy / maxUtilAmt) * usableH;
+      return `
+        <circle cx="${x}" cy="${yw}" r="5" fill="#4fa5d6" stroke="#fff" stroke-width="2" />
+        <circle cx="${x}" cy="${ye}" r="5" fill="#f2a65a" stroke="#fff" stroke-width="2" />
+        <text x="${x}" y="${height - 2}" font-size="11" fill="#718079" text-anchor="middle" font-weight="bold">${m.split('-')[1]}月</text>
+      `;
+    }).join('');
+
+    graphHtml = `
+      <div style="width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-top: 5px;">
+        <svg viewBox="0 0 ${width} ${height}" style="width: 100%; height: ${height}px; min-width: ${width}px; overflow: visible;">
+          <polyline points="${waterPts.join(' ')}" fill="none" stroke="#4fa5d6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+          <polyline points="${energyPts.join(' ')}" fill="none" stroke="#f2a65a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+          ${circlesHtml}
+        </svg>
+      </div>
+    `;
+  } else {
+    // 月ごとの平均表示
+    let totalWater = 0; let totalEnergy = 0;
+    sortedUtilMonths.forEach(m => {
+      totalWater += utilsMap[m].water;
+      totalEnergy += utilsMap[m].energy;
+    });
+    const avgWater = Math.round(totalWater / sortedUtilMonths.length);
+    const avgEnergy = Math.round(totalEnergy / sortedUtilMonths.length);
+    const avgTotal = avgWater + avgEnergy;
+    graphHtml = `
+      <div style="padding: 15px 0; text-align: center;">
+        <div class="muted" style="margin-bottom: 5px;">全期間の月平均</div>
+        <div style="font-size: 32px; font-weight: 850; color: #18221f; margin-bottom: 20px;">${yen(avgTotal)}<span style="font-size:14px; font-weight:bold; color:#718079;"> /月</span></div>
+        <div style="display: flex; justify-content: center; gap: 40px; margin-top: 15px;">
+          <div>
+            <div style="color: #4fa5d6; font-size: 13px; font-weight: bold; margin-bottom: 4px;">水道代 平均</div>
+            <div style="font-size: 18px; font-weight: 800;">${yen(avgWater)}</div>
+          </div>
+          <div>
+            <div style="color: #f2a65a; font-size: 13px; font-weight: bold; margin-bottom: 4px;">光熱費 平均</div>
+            <div style="font-size: 18px; font-weight: 800;">${yen(avgEnergy)}</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // --- タイムライン（履歴）の完全な時系列生成 ---
   const timeline: any[] = [];
-  filteredExpenses.forEach(e => timeline.push({ type: 'expense', date: e.expense_date, data: e }));
+  filteredExpenses.forEach(e => {
+    // 作成された正確な時間 (created_at がない場合は日付でフォールバック)
+    const rawTime = e.created_at || (e.expense_date + 'T00:00:00Z');
+    timeline.push({ type: 'expense', raw: rawTime, data: e });
+  });
   filteredSettlements.forEach(s => {
-    const d = new Date(s.settled_at);
-    const dStr = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-    timeline.push({ type: 'settlement', date: dStr, raw: s.settled_at, data: s });
+    timeline.push({ type: 'settlement', raw: s.settled_at, data: s });
   });
 
-  // 日付降順（新しいものが上）。同じ日付なら精算を上（後に起きた事）にする
+  // 日時で降順（新しいものが上）に完全にソート
   timeline.sort((a, b) => {
-    if (a.date !== b.date) return b.date.localeCompare(a.date);
-    return a.type === 'settlement' ? -1 : 1;
+    const tA = new Date(a.raw).getTime();
+    const tB = new Date(b.raw).getTime();
+    if (!isNaN(tA) && !isNaN(tB)) return tB - tA;
+    return 0; // フォールバック
   });
 
   let timelineHtml = '';
   timeline.forEach(item => {
+    const tStr = fmtTime(item.raw); // YYYY/MM/DD HH:MM のフォーマット
+
     if (item.type === 'settlement') {
       const s = item.data;
-      const d = new Date(s.settled_at);
       timelineHtml += `<div style="border-top: 2px dashed #2f6c57; margin: 28px 0 20px; position: relative;">
         <span style="position: absolute; top: -11px; left: 50%; transform: translateX(-50%); background: #fff; padding: 0 12px; color: #2f6c57; font-size: 11px; font-weight: bold; white-space: nowrap; border-radius: 12px; border: 1px solid #2f6c57;">
-          ✂️ 精算完了: ${yen(s.amount)} (${d.toLocaleDateString('ja-JP')})
+          ✂️ 精算完了: ${yen(s.amount)} (${tStr})
         </span>
       </div>`;
     } else {
@@ -172,17 +258,17 @@ async function view(tab = 'home') {
       timelineHtml += `<div class="expense ${isDel ? 'deleted-log' : ''}">
         <div class="expense-left">
           ${isDel ? `<del style="color:#888;"><b class="break-text">${esc(displayTitle)}</b></del>` : `<b class="break-text">${esc(displayTitle)}</b>`}
-          <div class="muted break-text" style="margin-top: 3px;">
+          <div class="muted break-text" style="margin-top: 4px; font-size: 12px;">
             ${isDel ? `<span class="deleted-badge">削除者: ${esc(delName)}</span>` : ''}
-            ${esc(name(e.payer_id))}・${e.expense_date}
+            ${esc(name(e.payer_id))}・${tStr}
           </div>
         </div>
         <div class="expense-right">
           ${isDel ? `<del style="color:#888;"><b>${yen(e.amount)}</b></del>` : `<b>${yen(e.amount)}</b>`}
-          <div style="margin-top: 4px;">
+          <div style="margin-top: 6px;">
             ${!isDel 
-              ? `<button class="del ghost" data-id="${e.id}" style="padding: 4px 8px; font-size: 12px; color: #a13c29; background: #fff0ed;">削除</button>` 
-              : `<button class="restore ghost" data-id="${e.id}" style="padding: 4px 8px; font-size: 12px; color: #2c604f; background: #eaf2ee;">戻す</button>`}
+              ? `<button class="del ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #a13c29; background: #fff0ed; border-radius: 8px;">削除</button>` 
+              : `<button class="restore ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #2c604f; background: #eaf2ee; border-radius: 8px;">戻す</button>`}
           </div>
         </div>
       </div>`;
@@ -190,7 +276,7 @@ async function view(tab = 'home') {
   });
 
   if (timeline.length === 0) {
-    timelineHtml = '<p class="muted">まだありません</p>';
+    timelineHtml = '<p class="muted" style="text-align: center; padding: 20px 0;">まだありません</p>';
   }
 
   app.innerHTML = `
@@ -202,28 +288,22 @@ async function view(tab = 'home') {
       .calc-buttons button { background: #eaf2ee; color: #2c604f; font-size: 20px; padding: 8px; font-weight: 800; cursor: pointer; }
       .deleted-log { opacity: 0.5; background: #f9f9f9; padding: 10px; margin: 4px 0; border-radius: 8px; }
       .deleted-badge { color: #d9534f; font-weight: 800; font-size: 11px; border: 1px solid #d9534f; padding: 1px 4px; border-radius: 4px; margin-right: 4px; display: inline-block; }
-      .expense { display: flex; justify-content: space-between; gap: 6px; width: 100%; align-items: flex-start; }
+      .expense { display: flex; justify-content: space-between; gap: 6px; width: 100%; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid #edf0ee; }
+      .expense:last-child { border-bottom: none; }
       .expense-left { flex: 1; min-width: 0; }
       .expense-right { text-align: right; white-space: nowrap; margin-left: 5px; flex-shrink: 0; padding-right: 2px; }
       .break-text { word-break: break-all; }
       .sub-chip { display: inline-block; background: #edf1ef; color: #243c35; padding: 8px 12px; border-radius: 12px; font-size: 13px; font-weight: bold; white-space: nowrap; cursor: pointer; margin-right: 8px; }
-      
-      /* グラフ用CSS */
-      .graph-wrap { display: flex; gap: 8px; height: 160px; padding-bottom: 10px; border-bottom: 1px solid #edf0ee; overflow-x: auto; align-items: flex-end; margin-top: 15px; }
-      .bar-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 40px; }
-      .bar-track { display: flex; flex-direction: column; justify-content: flex-end; width: 24px; height: 100px; }
-      .bar-water { width: 100%; background: #4fa5d6; border-radius: 0 0 4px 4px; transition: height 0.3s;}
-      .bar-energy { width: 100%; background: #f2a65a; border-radius: 4px 4px 0 0; transition: height 0.3s;}
     </style>
     <main class="app">
       <div class="top" style="margin-top: 10px; position: relative;">
         <div><div class="muted">ふたりのお金</div><h1>${esc(p?.name || 'PairPocket')}</h1></div>
-        <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 18px; position: absolute; right: 0; top: 0;">☰</button>
+        <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 20px; position: absolute; right: 0; top: 0; border-radius: 12px;">☰</button>
       </div>
       
       <section id="home" class="${tab === 'home' ? '' : 'hide'}">
         <div id="heroCard" class="card hero" style="cursor: pointer; position: relative;">
-          <div style="position: absolute; right: 15px; top: 15px; opacity: 0.7; font-size: 20px;">＋</div>
+          <div style="position: absolute; right: 15px; top: 15px; opacity: 0.7; font-size: 24px; font-weight: bold;">＋</div>
           <div class="muted">合計支出</div><div class="big">${yen(total)}</div>
           <div class="grid">${balances.map(x => `<div class="mini"><div class="muted">${esc(x.display_name)}</div><b>${yen(Number(x.paid_amount))}</b></div>`).join('')}</div>
         </div>
@@ -253,7 +333,7 @@ async function view(tab = 'home') {
           </select>
         </div>
         <div class="card history-scroll">
-          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0; z-index: 1;">タイムライン (新しい順)</h2>
+          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0; z-index: 1;">タイムライン</h2>
           <div style="margin-top: 10px;">
             ${timelineHtml}
           </div>
@@ -263,33 +343,24 @@ async function view(tab = 'home') {
       <section id="utilities" class="${tab === 'utilities' ? '' : 'hide'}">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
           <button id="closeUtils" class="ghost" style="padding: 10px 14px;">戻る</button>
-          <h2 style="margin: 0; font-size: 18px;">水道・光熱費グラフ</h2>
+          <h2 style="margin: 0; font-size: 18px;">水道・光熱費 管理</h2>
           <div style="width: 60px;"></div>
         </div>
 
         <div class="card">
-          <div class="muted">月別推移</div>
-          <div class="graph-wrap">
-            ${sortedUtilMonths.map(m => {
-              const tot = utilsMap[m].water + utilsMap[m].energy;
-              const energyH = (utilsMap[m].energy / maxUtilAmt) * 100;
-              const waterH = (utilsMap[m].water / maxUtilAmt) * 100;
-              return `
-                <div class="bar-col">
-                  <div style="font-size:10px; color:#556861; margin-bottom:4px; font-weight:bold;">${yen(tot)}</div>
-                  <div class="bar-track">
-                    <div class="bar-energy" style="height: ${energyH}%;"></div>
-                    <div class="bar-water" style="height: ${waterH}%;"></div>
-                  </div>
-                  <div style="font-size:10px; color:#718079; margin-top:6px;">${m.split('-')[1]}月</div>
-                </div>
-              `;
-            }).join('') || '<p class="muted" style="width:100%; text-align:center;">データがありません</p>'}
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <div class="muted">推移・平均</div>
+            <button id="utilModeToggle" class="ghost" style="padding: 6px 12px; font-size: 12px; border-radius: 8px; font-weight: bold;">
+              ${utilViewMode === 'trend' ? '平均を見る ⇄' : 'グラフを見る ⇄'}
+            </button>
           </div>
-          <div style="display: flex; gap: 12px; font-size: 12px; justify-content: center; margin-top: 12px; color: #556861; font-weight: bold;">
-            <div><span style="display:inline-block; width:12px; height:12px; background:#4fa5d6; margin-right:6px; border-radius:2px;"></span>水道代</div>
-            <div><span style="display:inline-block; width:12px; height:12px; background:#f2a65a; margin-right:6px; border-radius:2px;"></span>光熱費</div>
-          </div>
+          ${graphHtml}
+          ${utilViewMode === 'trend' && sortedUtilMonths.length > 0 ? `
+            <div style="display: flex; gap: 15px; font-size: 12px; justify-content: center; margin-top: 15px; color: #556861; font-weight: bold;">
+              <div><span style="display:inline-block; width:14px; height:3px; background:#4fa5d6; margin-right:6px; vertical-align:middle;"></span>水道代</div>
+              <div><span style="display:inline-block; width:14px; height:3px; background:#f2a65a; margin-right:6px; vertical-align:middle;"></span>光熱費</div>
+            </div>
+          ` : ''}
         </div>
 
         <div class="card">
@@ -308,17 +379,17 @@ async function view(tab = 'home') {
         <div class="card">
           <h2>履歴</h2>
           ${utils.slice().reverse().map((u:any) => `
-            <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 0; border-bottom:1px solid #edf0ee;">
+            <div style="display:flex; justify-content:space-between; align-items:center; padding: 12px 0; border-bottom:1px solid #edf0ee;">
               <div>
-                <b style="font-size:14px; color:${u.type==='water'?'#2c7aab':'#c97622'}">${u.type === 'water' ? '水道代' : '光熱費'}</b>
-                <div class="muted" style="font-size:12px;">${u.month}</div>
+                <b style="font-size:15px; color:${u.type==='water'?'#2c7aab':'#c97622'}">${u.type === 'water' ? '水道代' : '光熱費'}</b>
+                <div class="muted" style="font-size:12px; margin-top: 2px;">${u.month}</div>
               </div>
               <div style="text-align:right;">
-                <b>${yen(u.amount)}</b>
-                <br><button class="del-util ghost" data-id="${u.id}" style="color:#a13c29; padding:4px 8px; font-size:11px; margin-top:4px;">削除</button>
+                <b style="font-size: 16px;">${yen(u.amount)}</b>
+                <br><button class="del-util ghost" data-id="${u.id}" style="color:#a13c29; padding:4px 10px; font-size:11px; margin-top:6px; border-radius:6px;">削除</button>
               </div>
             </div>
-          `).join('') || '<p class="muted">まだありません</p>'}
+          `).join('') || '<p class="muted" style="text-align:center; padding:10px 0;">まだありません</p>'}
         </div>
       </section>
 
@@ -333,14 +404,14 @@ async function view(tab = 'home') {
           <p class="muted" style="font-size:12px; margin-top:0;">登録しておくと、金額追加画面でワンタップで入力できます。</p>
           <div id="subsList" style="margin-bottom: 12px;">
             ${subs.map((s:any) => `
-              <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 0; border-bottom:1px solid #edf0ee;">
+              <div style="display:flex; justify-content:space-between; align-items:center; padding: 10px 0; border-bottom:1px solid #edf0ee;">
                 <div>
                   <b style="font-size:14px;">${esc(s.title)}</b><br>
                   <span class="muted" style="font-size:12px;">${yen(s.amount)} (毎月${s.date ? s.date + '日' : '-'} / 支払: ${esc(name(s.payer_id))})</span>
                 </div>
-                <button class="del-sub ghost" data-id="${s.id}" style="color:#a13c29; padding:6px 10px; font-size:12px;">削除</button>
+                <button class="del-sub ghost" data-id="${s.id}" style="color:#a13c29; padding:6px 10px; font-size:12px; border-radius: 8px;">削除</button>
               </div>
-            `).join('') || '<p class="muted">登録されていません</p>'}
+            `).join('') || '<p class="muted" style="text-align:center; padding: 10px 0;">登録されていません</p>'}
           </div>
           <div style="background: #f9f9f9; padding: 12px; border-radius: 12px;">
             <label class="muted" style="font-size:12px;">新しいサブスクを登録</label>
@@ -500,12 +571,14 @@ function wire(state: any) {
     }
   });
 
-  // ホーム画面からの遷移
   q('#heroCard')?.addEventListener('click', () => view('entry'));
   q('#menuBtn')?.addEventListener('click', () => view('utilities'));
   q('#closeUtils')?.addEventListener('click', () => view('home'));
+  q('#utilModeToggle')?.addEventListener('click', () => {
+    utilViewMode = utilViewMode === 'trend' ? 'average' : 'trend';
+    view('utilities');
+  });
 
-  // 光熱費・水道代の追加
   q('#addUtilBtn')?.addEventListener('click', () => {
     const month = val('#utilMonth');
     const type = val('#utilType');
@@ -593,7 +666,6 @@ function wire(state: any) {
   
   document.querySelectorAll('[data-tab]').forEach((b: any) => b.onclick = () => view(b.dataset.tab));
   q('#out')?.addEventListener('click', logout);
-  q('#add')?.addEventListener('click', () => view('entry'));
   q('#cancel')?.addEventListener('click', () => view('home'));
   q('#amount')?.addEventListener('input', showCalc);
   
