@@ -4,7 +4,7 @@ import { supabase } from './supabase';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 let uid = '', pair = '', members: any[] = [], expenses: any[] = [], balances: any[] = [], settlements: any[] = [];
 let currentMonth = 'all'; 
-let utilViewMode: 'trend' | 'average' = 'trend'; // グラフの切り替えステート
+let utilViewMode: 'trend' | 'average' = 'trend'; 
 
 const getToday = () => {
   const d = new Date();
@@ -15,7 +15,6 @@ const getToday = () => {
 const yen = (n: number) => `¥${Math.round(n).toLocaleString('ja-JP')}`;
 const esc = (s: any) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
-// ISO時刻を YYYY/MM/DD HH:MM 形式にする関数
 const fmtTime = (raw: string) => {
   if (!raw) return '';
   const d = new Date(raw);
@@ -64,7 +63,7 @@ function pairView(msg = '') {
 async function load() {
   const [m, e, b, s] = await Promise.all([
     supabase.from('pair_members').select('user_id,role,profiles(display_name)').eq('pair_id', pair),
-    supabase.from('expenses').select('*').eq('pair_id', pair), // 並び替えはフロント側で一元管理する
+    supabase.from('expenses').select('*').eq('pair_id', pair), 
     supabase.from('pair_balances').select('*').eq('pair_id', pair),
     supabase.from('settlements').select('*').eq('pair_id', pair)
   ]);
@@ -80,11 +79,6 @@ async function view(tab = 'home') {
   const { data: p } = await supabase.from('pairs').select('name,invite_code').eq('id', pair).single();
   const name = (id: string) => members.find(x => x.user_id === id)?.profiles?.display_name || balances.find(x => x.user_id === id)?.display_name || 'メンバー';
   
-  const total = expenses.reduce((s, e) => {
-    if (typeof e.title === 'string' && e.title.startsWith('[削除済]')) return s;
-    return s + e.amount;
-  }, 0);
-
   let bals: Record<string, number> = {};
   members.forEach(m => bals[m.user_id] = 0);
 
@@ -128,7 +122,6 @@ async function view(tab = 'home') {
   const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
   const utils = JSON.parse(localStorage.getItem(`utils_${pair}`) || '[]');
 
-  // --- 水道・光熱費グラフの生成処理 ---
   const utilsMap: Record<string, {water: number, energy: number}> = {};
   utils.forEach((u: any) => {
     if (!utilsMap[u.month]) utilsMap[u.month] = { water: 0, energy: 0 };
@@ -146,7 +139,6 @@ async function view(tab = 'home') {
   if (sortedUtilMonths.length === 0) {
     graphHtml = '<p class="muted" style="width:100%; text-align:center; padding: 20px 0;">データがありません</p>';
   } else if (utilViewMode === 'trend') {
-    // 折れ線グラフ（SVG）
     const width = 320; const height = 130;
     const padX = 30; const padY = 20;
     const usableW = width - padX * 2;
@@ -187,7 +179,6 @@ async function view(tab = 'home') {
       </div>
     `;
   } else {
-    // 月ごとの平均表示
     let totalWater = 0; let totalEnergy = 0;
     sortedUtilMonths.forEach(m => {
       totalWater += utilsMap[m].water;
@@ -214,10 +205,8 @@ async function view(tab = 'home') {
     `;
   }
 
-  // --- タイムライン（履歴）の完全な時系列生成 ---
   const timeline: any[] = [];
   filteredExpenses.forEach(e => {
-    // 作成された正確な時間 (created_at がない場合は日付でフォールバック)
     const rawTime = e.created_at || (e.expense_date + 'T00:00:00Z');
     timeline.push({ type: 'expense', raw: rawTime, data: e });
   });
@@ -225,17 +214,16 @@ async function view(tab = 'home') {
     timeline.push({ type: 'settlement', raw: s.settled_at, data: s });
   });
 
-  // 日時で降順（新しいものが上）に完全にソート
   timeline.sort((a, b) => {
     const tA = new Date(a.raw).getTime();
     const tB = new Date(b.raw).getTime();
     if (!isNaN(tA) && !isNaN(tB)) return tB - tA;
-    return 0; // フォールバック
+    return 0; 
   });
 
   let timelineHtml = '';
   timeline.forEach(item => {
-    const tStr = fmtTime(item.raw); // YYYY/MM/DD HH:MM のフォーマット
+    const tStr = fmtTime(item.raw); 
 
     if (item.type === 'settlement') {
       const s = item.data;
@@ -302,27 +290,23 @@ async function view(tab = 'home') {
       </div>
       
       <section id="home" class="${tab === 'home' ? '' : 'hide'}">
-        <div id="heroCard" class="card hero" style="cursor: pointer; position: relative;">
-          <div style="position: absolute; right: 15px; top: 15px; opacity: 0.7; font-size: 24px; font-weight: bold;">＋</div>
-          <div class="muted">合計支出</div><div class="big">${yen(total)}</div>
-          <div class="grid">${balances.map(x => `<div class="mini"><div class="muted">${esc(x.display_name)}</div><b>${yen(Number(x.paid_amount))}</b></div>`).join('')}</div>
-        </div>
-        <div class="card">
-          <div class="muted">現在の精算</div>
-          ${members.length < 2 ? '<h2>相手の参加待ち</h2>' : amount < 1 ? '<div class="settled">精算はありません</div>' : `
-            <h2>${esc(name(sender))} → ${esc(name(receiver))}</h2>
-            <div class="big">${yen(amount)}</div>
+        <div class="card" style="padding: 24px; text-align: center;">
+          <div class="muted" style="margin-bottom: 12px;">現在の精算</div>
+          ${members.length < 2 ? '<h2>相手の参加待ち</h2>' : amount < 1 ? '<div class="settled" style="font-size: 18px;">精算はありません</div>' : `
+            <h2 style="font-size: 22px; margin-bottom: 10px;">${esc(name(sender))} → ${esc(name(receiver))}</h2>
+            <div class="big" style="color: #d9534f; margin-bottom: 20px;">${yen(amount)}</div>
             
-            <div style="margin-top: 15px; border-top: 1px solid #edf0ee; padding-top: 15px;">
+            <div style="border-top: 1px solid #edf0ee; padding-top: 20px; text-align: left;">
               <label class="muted" style="font-size: 12px;">今回精算する金額</label>
               <div style="display: flex; gap: 8px; margin-top: 6px;">
                 <input type="number" id="settleAmount" class="field" style="margin: 0; flex: 1; font-size: 18px; font-weight: bold;" value="${amount}">
                 <button id="settleFullBtn" class="ghost" style="white-space: nowrap;">全額</button>
               </div>
-              <button id="settleBtn" class="settle" style="margin-top: 12px;">この金額で精算する</button>
+              <button id="settleBtn" class="settle" style="margin-top: 15px; font-size: 16px;">この金額で精算する</button>
             </div>
           `}
         </div>
+        <button id="add" class="primary full" style="padding: 20px; font-size: 18px; box-shadow: 0 4px 12px rgba(239, 131, 84, 0.3);">＋ 新しく追加する</button>
       </section>
 
       <section id="history" class="${tab === 'history' ? '' : 'hide'}">
@@ -437,7 +421,9 @@ async function view(tab = 'home') {
         </div>
         <div class="card" style="border: 2px solid #ffe9e4; background: #fffcfc;">
           <h2 style="color:#9c2e1c; margin-top:0;">危険な操作</h2>
-          <button id="delAllBtn" class="ghost full" style="color:#9c2e1c; background:#ffe9e4;">すべての履歴を削除する</button>
+          <button id="delAllBtn" class="ghost full" style="color:#9c2e1c; background:#ffe9e4; margin-bottom: 12px;">すべての履歴を削除する</button>
+          
+          <button id="resetUtilsBtn" class="ghost full" style="color:#9c2e1c; background:#ffe9e4;">水道代・光熱費の記録をすべて削除</button>
         </div>
         <button id="out" class="ghost full">ログアウト</button>
       </section>
@@ -571,7 +557,6 @@ function wire(state: any) {
     }
   });
 
-  q('#heroCard')?.addEventListener('click', () => view('entry'));
   q('#menuBtn')?.addEventListener('click', () => view('utilities'));
   q('#closeUtils')?.addEventListener('click', () => view('home'));
   q('#utilModeToggle')?.addEventListener('click', () => {
@@ -658,6 +643,13 @@ function wire(state: any) {
     view('settings');
   });
 
+  q('#resetUtilsBtn')?.addEventListener('click', () => {
+    if (!confirm('【警告】\n水道代・光熱費の記録をすべて削除します。\nよろしいですか？')) return;
+    localStorage.removeItem(`utils_${pair}`);
+    alert('水道代・光熱費の記録をすべて削除しました');
+    view('settings');
+  });
+
   document.querySelectorAll('[data-payer]').forEach((b: any) => b.onclick = () => {
     q('#payer').value = b.dataset.payer;
     document.querySelectorAll('[data-payer]').forEach((x: any) => x.classList.remove('selected'));
@@ -666,6 +658,7 @@ function wire(state: any) {
   
   document.querySelectorAll('[data-tab]').forEach((b: any) => b.onclick = () => view(b.dataset.tab));
   q('#out')?.addEventListener('click', logout);
+  q('#add')?.addEventListener('click', () => view('entry'));
   q('#cancel')?.addEventListener('click', () => view('home'));
   q('#amount')?.addEventListener('input', showCalc);
   
