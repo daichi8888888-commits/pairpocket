@@ -3,6 +3,8 @@ import { supabase } from './supabase';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 let uid = '', pair = '', members: any[] = [], expenses: any[] = [], balances: any[] = [], settlements: any[] = [];
+let currentMonth = 'all'; // 月別フィルター用ステート
+
 const yen = (n: number) => `¥${Math.round(n).toLocaleString('ja-JP')}`;
 const esc = (s: any) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
@@ -64,11 +66,10 @@ async function view(tab = 'home') {
   const name = (id: string) => members.find(x => x.user_id === id)?.profiles?.display_name || balances.find(x => x.user_id === id)?.display_name || 'メンバー';
   const total = expenses.reduce((s, e) => s + e.amount, 0);
 
-  // --- 修正箇所：Supabaseの残高ビューに頼らず、フロントエンドで直接正確な残高を計算する ---
+  // フロントエンドで直接正確な残高を計算する
   let bals: Record<string, number> = {};
   members.forEach(m => bals[m.user_id] = 0);
 
-  // 1. 支出（入力した値＝そのまま相手への請求額として計算）
   expenses.forEach(e => {
     const pId = e.payer_id;
     const oId = members.find(m => m.user_id !== pId)?.user_id;
@@ -76,7 +77,6 @@ async function view(tab = 'home') {
     if (oId && bals[oId] !== undefined) bals[oId] -= Number(e.amount);
   });
 
-  // 2. 精算履歴（精算した分だけ残高を相殺）
   settlements.forEach(s => {
     const fId = s.from_user_id;
     const tId = s.to_user_id;
@@ -101,9 +101,140 @@ async function view(tab = 'home') {
       amount = Math.abs(bals[u2] || 0);
     }
   }
-  // ------------------------------------------------------------------------------------
 
-  app.innerHTML = `<main class="app"><div class="top"><div><div class="muted">ふたりのお金</div><h1>${esc(p?.name || 'PairPocket')}</h1></div></div><section id="home" class="${tab === 'home' ? '' : 'hide'}"><div class="card hero"><div class="muted">合計支出</div><div class="big">${yen(total)}</div><div class="grid">${balances.map(x => `<div class="mini"><div class="muted">${esc(x.display_name)}</div><b>${yen(Number(x.paid_amount))}</b></div>`).join('')}</div></div><div class="card"><div class="muted">現在の精算</div>${members.length < 2 ? '<h2>相手の参加待ち</h2>' : amount < 1 ? '<div class="settled">精算はありません</div>' : `<h2>${esc(name(sender))} → ${esc(name(receiver))}</h2><div class="big">${yen(amount)}</div><button id="settle" class="settle">${yen(amount)}を精算済みにする</button>`}</div><button id="add" class="primary full">＋ 金額を追加</button></section><section id="history" class="${tab === 'history' ? '' : 'hide'}"><div class="card"><h2>支出履歴</h2>${expenses.map(e => `<div class="expense"><div><b>${esc(e.title)}</b><div class="muted">${esc(name(e.payer_id))}・${e.expense_date}</div></div><div><b>${yen(e.amount)}</b> <button class="del" data-id="${e.id}">削除</button></div></div>`).join('') || '<p class="muted">まだありません</p>'}</div><div class="card"><h2>精算履歴</h2>${settlements.map(s => `<div class="expense"><div><b>${esc(name(s.from_user_id))} → ${esc(name(s.to_user_id))}</b><div class="muted">${new Date(s.settled_at).toLocaleDateString('ja-JP')}</div></div><b>${yen(s.amount)}</b></div>`).join('') || '<p class="muted">まだありません</p>'}</div></section><section id="settings" class="${tab === 'settings' ? '' : 'hide'}"><div class="card"><h2>招待コード</h2><div class="big">${esc(p?.invite_code)}</div><p>${members.length}/2人</p></div><button id="out" class="ghost full">ログアウト</button></section><section id="entry" class="card hide"><div class="top"><div><div class="muted">内容なしでも登録可能</div><h2>金額を追加</h2></div><button id="cancel" class="ghost">×</button></div><input id="title" class="field" placeholder="内容（任意）"><label class="muted">金額または計算式</label><div class="money"><span>¥</span><input id="amount" inputmode="decimal" placeholder="1200+350"></div><div id="result" class="result">計算結果：¥0</div><div class="quick"><button data-plus="100">+100</button><button data-plus="500">+500</button><button data-plus="1000">+1,000</button><button id="clear">クリア</button></div><button id="split" class="split">÷ 2人で割り勘</button><label class="muted">支払った人</label><div class="payer-buttons">${members.map((m, i) => `<button type="button" class="payer-btn ${i === 0 ? 'selected' : ''}" data-payer="${m.user_id}">${esc(name(m.user_id))}</button>`).join('')}</div><input id="payer" type="hidden" value="${members[0]?.user_id || ''}"><label class="muted">カテゴリー</label><select id="cat" class="field"><option value="" selected>カテゴリーなし</option>${['食費', '外食', '生活', '家賃', '光熱費', '交通', '娯楽', '旅行', 'その他'].map(x => `<option value="${x}">${x}</option>`).join('')}</select><button id="save" class="primary full">この金額を追加</button></section><nav class="tabs"><button data-tab="home">ホーム</button><button data-tab="history">履歴</button><button data-tab="settings">設定</button></nav></main>`;
+  // 月別フィルターのための月リスト作成
+  const months = Array.from(new Set([
+    ...expenses.map(e => (e.expense_date || '').slice(0, 7)),
+    ...settlements.map(s => new Date(s.settled_at).toISOString().slice(0, 7))
+  ])).filter(Boolean).sort().reverse();
+
+  // 表示する履歴のフィルタリング
+  const filteredExpenses = expenses.filter(e => currentMonth === 'all' || e.expense_date?.startsWith(currentMonth));
+  const filteredSettlements = settlements.filter(s => currentMonth === 'all' || new Date(s.settled_at).toISOString().startsWith(currentMonth));
+
+  // 自分の名前を取得
+  const myName = members.find(m => m.user_id === uid)?.profiles?.display_name || '';
+
+  app.innerHTML = `
+    <style>
+      .calc-buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 8px; margin-bottom: 12px; }
+      .calc-buttons button { background: #eaf2ee; color: #2c604f; font-size: 18px; padding: 10px; font-weight: 800; }
+      .deleted-log { opacity: 0.6; }
+      .deleted-badge { color: #d9534f; font-weight: 800; font-size: 11px; border: 1px solid #d9534f; padding: 1px 4px; border-radius: 4px; margin-right: 4px; }
+    </style>
+    <main class="app">
+      <div class="top">
+        <div><div class="muted">ふたりのお金</div><h1>${esc(p?.name || 'PairPocket')}</h1></div>
+      </div>
+      
+      <section id="home" class="${tab === 'home' ? '' : 'hide'}">
+        <div class="card hero">
+          <div class="muted">合計支出</div><div class="big">${yen(total)}</div>
+          <div class="grid">${balances.map(x => `<div class="mini"><div class="muted">${esc(x.display_name)}</div><b>${yen(Number(x.paid_amount))}</b></div>`).join('')}</div>
+        </div>
+        <div class="card">
+          <div class="muted">現在の精算</div>
+          ${members.length < 2 ? '<h2>相手の参加待ち</h2>' : amount < 1 ? '<div class="settled">精算はありません</div>' : `<h2>${esc(name(sender))} → ${esc(name(receiver))}</h2><div class="big">${yen(amount)}</div><button id="settle" class="settle">${yen(amount)}を精算済みにする</button>`}
+        </div>
+        <button id="add" class="primary full">＋ 金額を追加</button>
+      </section>
+
+      <section id="history" class="${tab === 'history' ? '' : 'hide'}">
+        <div class="card" style="padding: 10px 18px;">
+          <select id="monthSelect" class="field" style="margin:0; font-weight:bold; background:#f9f9f9;">
+            <option value="all" ${currentMonth === 'all' ? 'selected' : ''}>すべての履歴を表示</option>
+            ${months.map(m => `<option value="${m}" ${currentMonth === m ? 'selected' : ''}>${m.split('-')[0]}年${m.split('-')[1]}月</option>`).join('')}
+          </select>
+        </div>
+        <div class="card">
+          <h2>支出履歴</h2>
+          ${filteredExpenses.map(e => {
+            const isDel = e.memo?.startsWith('del:');
+            const amt = isDel ? Number(e.memo.split(':')[1]) : e.amount;
+            return `<div class="expense ${isDel ? 'deleted-log' : ''}">
+              <div>
+                <b style="${isDel ? 'text-decoration:line-through; color:#a0b0a8;' : ''}">${esc(e.title)}</b>
+                <div class="muted">${isDel ? '<span class="deleted-badge">削除済</span>' : ''}${esc(name(e.payer_id))}・${e.expense_date}</div>
+              </div>
+              <div>
+                <b style="${isDel ? 'text-decoration:line-through; color:#a0b0a8;' : ''}">${yen(amt)}</b>
+                ${!isDel ? `<button class="del" data-id="${e.id}">削除</button>` : ''}
+              </div>
+            </div>`;
+          }).join('') || '<p class="muted">まだありません</p>'}
+        </div>
+        <div class="card">
+          <h2>精算履歴</h2>
+          ${filteredSettlements.map(s => `<div class="expense"><div><b>${esc(name(s.from_user_id))} → ${esc(name(s.to_user_id))}</b><div class="muted">${new Date(s.settled_at).toLocaleDateString('ja-JP')}</div></div><b>${yen(s.amount)}</b></div>`).join('') || '<p class="muted">まだありません</p>'}
+        </div>
+      </section>
+
+      <section id="settings" class="${tab === 'settings' ? '' : 'hide'}">
+        <div class="card">
+          <h2>招待コード</h2>
+          <div class="big">${esc(p?.invite_code)}</div><p>${members.length}/2人</p>
+        </div>
+        <div class="card">
+          <h2>プロフィール設定</h2>
+          <label class="muted">名前の変更</label>
+          <div style="display:flex; gap:8px; margin-top:6px;">
+            <input id="myName" class="field" style="margin:0;" value="${esc(myName)}" placeholder="あなたの名前">
+            <button id="updateNameBtn" class="dark" style="min-width:70px;">更新</button>
+          </div>
+        </div>
+        <div class="card" style="border: 2px solid #ffe9e4; background: #fffcfc;">
+          <h2 style="color:#9c2e1c; margin-top:0;">危険な操作</h2>
+          <button id="delAllBtn" class="ghost full" style="color:#9c2e1c; background:#ffe9e4;">すべての履歴を削除する</button>
+        </div>
+        <button id="out" class="ghost full">ログアウト</button>
+      </section>
+
+      <section id="entry" class="card hide">
+        <div class="top">
+          <div><div class="muted">内容なしでも登録可能</div><h2>金額を追加</h2></div>
+          <button id="cancel" class="ghost">×</button>
+        </div>
+        <input id="title" class="field" placeholder="内容（任意）">
+        <label class="muted">金額または計算式</label>
+        <div class="money">
+          <span>¥</span>
+          <input id="amount" inputmode="text" placeholder="1200+350">
+        </div>
+        
+        <!-- 追加した四則演算ボタン -->
+        <div class="calc-buttons">
+          <button type="button" data-op="+">＋</button>
+          <button type="button" data-op="-">－</button>
+          <button type="button" data-op="*">×</button>
+          <button type="button" data-op="/">÷</button>
+        </div>
+
+        <div id="result" class="result">計算結果：¥0</div>
+        <div class="quick">
+          <button data-plus="100">+100</button>
+          <button data-plus="500">+500</button>
+          <button data-plus="1000">+1,000</button>
+          <button id="clear">クリア</button>
+        </div>
+        <button id="split" class="split">÷ 2人で割り勘</button>
+        <label class="muted">支払った人</label>
+        <div class="payer-buttons">${members.map((m, i) => `<button type="button" class="payer-btn ${i === 0 ? 'selected' : ''}" data-payer="${m.user_id}">${esc(name(m.user_id))}</button>`).join('')}</div>
+        <input id="payer" type="hidden" value="${members[0]?.user_id || ''}">
+        <label class="muted">カテゴリー</label>
+        <select id="cat" class="field">
+          <option value="" selected>カテゴリーなし</option>
+          ${['食費', '外食', '生活', '家賃', '光熱費', '交通', '娯楽', '旅行', 'その他'].map(x => `<option value="${x}">${x}</option>`).join('')}
+        </select>
+        <button id="save" class="primary full">この金額を追加</button>
+      </section>
+
+      <nav class="tabs">
+        <button data-tab="home">ホーム</button>
+        <button data-tab="history">履歴</button>
+        <button data-tab="settings">設定</button>
+      </nav>
+    </main>
+  `;
   wire({ amount, sender, receiver });
 }
 
@@ -125,28 +256,68 @@ function showCalc() {
 }
 
 function wire(state: any) {
+  // 月別フィルターのイベント
+  q('#monthSelect')?.addEventListener('change', (e: any) => {
+    currentMonth = e.target.value;
+    view('history');
+  });
+
+  // 四則演算ボタンのイベント
+  document.querySelectorAll('[data-op]').forEach((b: any) => b.onclick = () => {
+    q('#amount').value += b.dataset.op;
+    showCalc();
+  });
+
+  // プロフィール名前更新イベント
+  q('#updateNameBtn')?.addEventListener('click', async () => {
+    const newName = val('#myName').trim();
+    if (!newName) return alert('名前を入力してください');
+    const { error } = await supabase.from('profiles').update({ display_name: newName }).eq('id', uid);
+    if (error) return alert(error.message);
+    alert('名前を更新しました');
+    await load();
+    view('settings');
+  });
+
+  // 全履歴削除イベント
+  q('#delAllBtn')?.addEventListener('click', async () => {
+    if (!confirm('【警告】\nすべての支出履歴と精算履歴を完全に削除します。\nこの操作は元に戻せません。よろしいですか？')) return;
+    await supabase.from('expenses').delete().eq('pair_id', pair);
+    await supabase.from('settlements').delete().eq('pair_id', pair);
+    alert('すべての履歴を削除しました');
+    currentMonth = 'all';
+    await load();
+    view('settings');
+  });
+
   document.querySelectorAll('[data-payer]').forEach((b: any) => b.onclick = () => {
     q('#payer').value = b.dataset.payer;
     document.querySelectorAll('[data-payer]').forEach((x: any) => x.classList.remove('selected'));
     b.classList.add('selected');
   });
+  
   document.querySelectorAll('[data-tab]').forEach((b: any) => b.onclick = () => view(b.dataset.tab));
   q('#out')?.addEventListener('click', logout);
+  
   q('#add')?.addEventListener('click', () => {
     ['home', 'history', 'settings'].forEach(x => q('#' + x).classList.add('hide'));
     q('#entry').classList.remove('hide');
   });
+  
   q('#cancel')?.addEventListener('click', () => view());
   q('#amount')?.addEventListener('input', showCalc);
+  
   document.querySelectorAll('[data-plus]').forEach((b: any) => b.onclick = () => {
     const n = calc();
     q('#amount').value = String((Number.isFinite(n) ? n : 0) + Number(b.dataset.plus));
     showCalc();
   });
+  
   q('#clear')?.addEventListener('click', () => {
     q('#amount').value = '';
     showCalc();
   });
+  
   q('#split')?.addEventListener('click', () => {
     const n = calc();
     if (Number.isFinite(n) && n > 0) {
@@ -154,12 +325,21 @@ function wire(state: any) {
       showCalc();
     }
   });
+  
   q('#save')?.addEventListener('click', save);
   q('#settle')?.addEventListener('click', () => settle(state));
+  
+  // 削除ボタン（ログを残す論理削除）
   document.querySelectorAll('.del').forEach((b: any) => b.onclick = async () => {
-    await supabase.from('expenses').delete().eq('id', b.dataset.id);
-    await load();
-    view('history');
+    if (!confirm('この履歴を取り消しますか？\n(ログとして取り消し線が残ります)')) return;
+    const id = b.dataset.id;
+    const e = expenses.find(x => x.id === id);
+    if(e) {
+      // 実際の計算額を0にし、memoに元の金額を記録してUIで復元表示する
+      await supabase.from('expenses').update({ amount: 0, memo: 'del:' + e.amount }).eq('id', id);
+      await load();
+      view('history');
+    }
   });
 }
 
