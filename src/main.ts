@@ -116,75 +116,88 @@ async function view(tab = 'home') {
   const filteredExpenses = expenses.filter(e => currentMonth === 'all' || e.expense_date?.startsWith(currentMonth));
   const filteredSettlements = settlements.filter(s => currentMonth === 'all' || new Date(s.settled_at).toISOString().startsWith(currentMonth));
   const myName = members.find(m => m.user_id === uid)?.profiles?.display_name || '';
-
   const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
+  const utils = JSON.parse(localStorage.getItem(`utils_${pair}`) || '[]');
 
-  let sIdx = 0;
-  let expensesListHtml = '';
-  filteredExpenses.forEach(e => {
-    // 支出日より前に精算された履歴があれば区切り線を引く
-    while (sIdx < filteredSettlements.length) {
-      const s = new Date(filteredSettlements[sIdx].settled_at);
-      const sDate = s.getFullYear() + '-' + String(s.getMonth() + 1).padStart(2, '0') + '-' + String(s.getDate()).padStart(2, '0');
-      if (sDate >= (e.expense_date || '')) {
-        expensesListHtml += `<div style="border-top: 2px dashed #2f6c57; margin: 24px 0 16px; position: relative;">
-          <span style="position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: #fff; padding: 0 10px; color: #2f6c57; font-size: 11px; font-weight: bold; white-space: nowrap;">
-            ✂️ 精算完了 (${s.toLocaleDateString('ja-JP')})
-          </span>
-        </div>`;
-        sIdx++;
-      } else {
-        break;
-      }
-    }
-
-    const isDel = typeof e.title === 'string' && e.title.startsWith('[削除済]');
-    let displayTitle = e.title;
-    let delName = '';
-    if (isDel) {
-      const parts = e.title.replace('[削除済] ', '').split('::');
-      delName = name(parts[0]); 
-      displayTitle = parts.slice(1).join('::');
-    }
-
-    expensesListHtml += `<div class="expense ${isDel ? 'deleted-log' : ''}">
-      <div class="expense-left">
-        ${isDel ? `<del style="color:#888;"><b class="break-text">${esc(displayTitle)}</b></del>` : `<b class="break-text">${esc(displayTitle)}</b>`}
-        <div class="muted break-text" style="margin-top: 3px;">
-          ${isDel ? `<span class="deleted-badge">削除者: ${esc(delName)}</span>` : ''}
-          ${esc(name(e.payer_id))}・${e.expense_date}
-        </div>
-      </div>
-      <div class="expense-right">
-        ${isDel ? `<del style="color:#888;"><b>${yen(e.amount)}</b></del>` : `<b>${yen(e.amount)}</b>`}
-        <div style="margin-top: 4px;">
-          ${!isDel 
-            ? `<button class="del ghost" data-id="${e.id}" style="padding: 4px 8px; font-size: 12px; color: #a13c29; background: #fff0ed;">削除</button>` 
-            : `<button class="restore ghost" data-id="${e.id}" style="padding: 4px 8px; font-size: 12px; color: #2c604f; background: #eaf2ee;">戻す</button>`}
-        </div>
-      </div>
-    </div>`;
+  // 水道・光熱費グラフデータの計算
+  const utilsMap: Record<string, {water: number, energy: number}> = {};
+  utils.forEach((u: any) => {
+    if (!utilsMap[u.month]) utilsMap[u.month] = { water: 0, energy: 0 };
+    if (u.type === 'water') utilsMap[u.month].water += Number(u.amount);
+    if (u.type === 'energy') utilsMap[u.month].energy += Number(u.amount);
+  });
+  const sortedUtilMonths = Object.keys(utilsMap).sort();
+  let maxUtilAmt = 1;
+  sortedUtilMonths.forEach(m => {
+    const tot = utilsMap[m].water + utilsMap[m].energy;
+    if (tot > maxUtilAmt) maxUtilAmt = tot;
   });
 
-  while (sIdx < filteredSettlements.length) {
-    const s = new Date(filteredSettlements[sIdx].settled_at);
-    expensesListHtml += `<div style="border-top: 2px dashed #2f6c57; margin: 24px 0 16px; position: relative;">
-      <span style="position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: #fff; padding: 0 10px; color: #2f6c57; font-size: 11px; font-weight: bold; white-space: nowrap;">
-        ✂️ 精算完了 (${s.toLocaleDateString('ja-JP')})
-      </span>
-    </div>`;
-    sIdx++;
-  }
+  // タイムラインの構築（新しい順に完全に並び替え）
+  const timeline: any[] = [];
+  filteredExpenses.forEach(e => timeline.push({ type: 'expense', date: e.expense_date, data: e }));
+  filteredSettlements.forEach(s => {
+    const d = new Date(s.settled_at);
+    const dStr = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    timeline.push({ type: 'settlement', date: dStr, raw: s.settled_at, data: s });
+  });
 
-  if (filteredExpenses.length === 0 && filteredSettlements.length === 0) {
-    expensesListHtml = '<p class="muted">まだありません</p>';
+  // 日付降順（新しいものが上）。同じ日付なら精算を上（後に起きた事）にする
+  timeline.sort((a, b) => {
+    if (a.date !== b.date) return b.date.localeCompare(a.date);
+    return a.type === 'settlement' ? -1 : 1;
+  });
+
+  let timelineHtml = '';
+  timeline.forEach(item => {
+    if (item.type === 'settlement') {
+      const s = item.data;
+      const d = new Date(s.settled_at);
+      timelineHtml += `<div style="border-top: 2px dashed #2f6c57; margin: 28px 0 20px; position: relative;">
+        <span style="position: absolute; top: -11px; left: 50%; transform: translateX(-50%); background: #fff; padding: 0 12px; color: #2f6c57; font-size: 11px; font-weight: bold; white-space: nowrap; border-radius: 12px; border: 1px solid #2f6c57;">
+          ✂️ 精算完了: ${yen(s.amount)} (${d.toLocaleDateString('ja-JP')})
+        </span>
+      </div>`;
+    } else {
+      const e = item.data;
+      const isDel = typeof e.title === 'string' && e.title.startsWith('[削除済]');
+      let displayTitle = e.title;
+      let delName = '';
+      if (isDel) {
+        const parts = e.title.replace('[削除済] ', '').split('::');
+        delName = name(parts[0]); 
+        displayTitle = parts.slice(1).join('::');
+      }
+
+      timelineHtml += `<div class="expense ${isDel ? 'deleted-log' : ''}">
+        <div class="expense-left">
+          ${isDel ? `<del style="color:#888;"><b class="break-text">${esc(displayTitle)}</b></del>` : `<b class="break-text">${esc(displayTitle)}</b>`}
+          <div class="muted break-text" style="margin-top: 3px;">
+            ${isDel ? `<span class="deleted-badge">削除者: ${esc(delName)}</span>` : ''}
+            ${esc(name(e.payer_id))}・${e.expense_date}
+          </div>
+        </div>
+        <div class="expense-right">
+          ${isDel ? `<del style="color:#888;"><b>${yen(e.amount)}</b></del>` : `<b>${yen(e.amount)}</b>`}
+          <div style="margin-top: 4px;">
+            ${!isDel 
+              ? `<button class="del ghost" data-id="${e.id}" style="padding: 4px 8px; font-size: 12px; color: #a13c29; background: #fff0ed;">削除</button>` 
+              : `<button class="restore ghost" data-id="${e.id}" style="padding: 4px 8px; font-size: 12px; color: #2c604f; background: #eaf2ee;">戻す</button>`}
+          </div>
+        </div>
+      </div>`;
+    }
+  });
+
+  if (timeline.length === 0) {
+    timelineHtml = '<p class="muted">まだありません</p>';
   }
 
   app.innerHTML = `
     <style>
       .app { padding-top: max(20px, env(safe-area-inset-top)) !important; padding-bottom: max(100px, calc(env(safe-area-inset-bottom) + 80px)) !important; overflow-x: hidden; }
       .tabs { padding-bottom: max(10px, env(safe-area-inset-bottom)) !important; z-index: 100;}
-      .history-scroll { max-height: 52vh; overflow-y: auto; padding-right: 12px; overscroll-behavior: contain; }
+      .history-scroll { max-height: 60vh; overflow-y: auto; padding-right: 12px; overscroll-behavior: contain; }
       .calc-buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 8px; margin-bottom: 12px; }
       .calc-buttons button { background: #eaf2ee; color: #2c604f; font-size: 20px; padding: 8px; font-weight: 800; cursor: pointer; }
       .deleted-log { opacity: 0.5; background: #f9f9f9; padding: 10px; margin: 4px 0; border-radius: 8px; }
@@ -194,14 +207,23 @@ async function view(tab = 'home') {
       .expense-right { text-align: right; white-space: nowrap; margin-left: 5px; flex-shrink: 0; padding-right: 2px; }
       .break-text { word-break: break-all; }
       .sub-chip { display: inline-block; background: #edf1ef; color: #243c35; padding: 8px 12px; border-radius: 12px; font-size: 13px; font-weight: bold; white-space: nowrap; cursor: pointer; margin-right: 8px; }
+      
+      /* グラフ用CSS */
+      .graph-wrap { display: flex; gap: 8px; height: 160px; padding-bottom: 10px; border-bottom: 1px solid #edf0ee; overflow-x: auto; align-items: flex-end; margin-top: 15px; }
+      .bar-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 40px; }
+      .bar-track { display: flex; flex-direction: column; justify-content: flex-end; width: 24px; height: 100px; }
+      .bar-water { width: 100%; background: #4fa5d6; border-radius: 0 0 4px 4px; transition: height 0.3s;}
+      .bar-energy { width: 100%; background: #f2a65a; border-radius: 4px 4px 0 0; transition: height 0.3s;}
     </style>
     <main class="app">
-      <div class="top" style="margin-top: 10px;">
+      <div class="top" style="margin-top: 10px; position: relative;">
         <div><div class="muted">ふたりのお金</div><h1>${esc(p?.name || 'PairPocket')}</h1></div>
+        <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 18px; position: absolute; right: 0; top: 0;">☰</button>
       </div>
       
       <section id="home" class="${tab === 'home' ? '' : 'hide'}">
-        <div class="card hero">
+        <div id="heroCard" class="card hero" style="cursor: pointer; position: relative;">
+          <div style="position: absolute; right: 15px; top: 15px; opacity: 0.7; font-size: 20px;">＋</div>
           <div class="muted">合計支出</div><div class="big">${yen(total)}</div>
           <div class="grid">${balances.map(x => `<div class="mini"><div class="muted">${esc(x.display_name)}</div><b>${yen(Number(x.paid_amount))}</b></div>`).join('')}</div>
         </div>
@@ -221,7 +243,6 @@ async function view(tab = 'home') {
             </div>
           `}
         </div>
-        <button id="add" class="primary full">＋ 金額を追加</button>
       </section>
 
       <section id="history" class="${tab === 'history' ? '' : 'hide'}">
@@ -232,20 +253,72 @@ async function view(tab = 'home') {
           </select>
         </div>
         <div class="card history-scroll">
-          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0; z-index: 1;">支出履歴</h2>
-          ${expensesListHtml}
+          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0; z-index: 1;">タイムライン (新しい順)</h2>
+          <div style="margin-top: 10px;">
+            ${timelineHtml}
+          </div>
         </div>
-        <div class="card history-scroll">
-          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0; z-index: 1;">精算履歴</h2>
-          ${filteredSettlements.map(s => `<div class="expense">
-            <div class="expense-left">
-              <b class="break-text">${esc(name(s.from_user_id))} → ${esc(name(s.to_user_id))}</b>
-              <div class="muted">${new Date(s.settled_at).toLocaleDateString('ja-JP')}</div>
+      </section>
+
+      <section id="utilities" class="${tab === 'utilities' ? '' : 'hide'}">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+          <button id="closeUtils" class="ghost" style="padding: 10px 14px;">戻る</button>
+          <h2 style="margin: 0; font-size: 18px;">水道・光熱費グラフ</h2>
+          <div style="width: 60px;"></div>
+        </div>
+
+        <div class="card">
+          <div class="muted">月別推移</div>
+          <div class="graph-wrap">
+            ${sortedUtilMonths.map(m => {
+              const tot = utilsMap[m].water + utilsMap[m].energy;
+              const energyH = (utilsMap[m].energy / maxUtilAmt) * 100;
+              const waterH = (utilsMap[m].water / maxUtilAmt) * 100;
+              return `
+                <div class="bar-col">
+                  <div style="font-size:10px; color:#556861; margin-bottom:4px; font-weight:bold;">${yen(tot)}</div>
+                  <div class="bar-track">
+                    <div class="bar-energy" style="height: ${energyH}%;"></div>
+                    <div class="bar-water" style="height: ${waterH}%;"></div>
+                  </div>
+                  <div style="font-size:10px; color:#718079; margin-top:6px;">${m.split('-')[1]}月</div>
+                </div>
+              `;
+            }).join('') || '<p class="muted" style="width:100%; text-align:center;">データがありません</p>'}
+          </div>
+          <div style="display: flex; gap: 12px; font-size: 12px; justify-content: center; margin-top: 12px; color: #556861; font-weight: bold;">
+            <div><span style="display:inline-block; width:12px; height:12px; background:#4fa5d6; margin-right:6px; border-radius:2px;"></span>水道代</div>
+            <div><span style="display:inline-block; width:12px; height:12px; background:#f2a65a; margin-right:6px; border-radius:2px;"></span>光熱費</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>記録を追加</h2>
+          <div style="display: flex; gap: 6px; margin-top: 10px;">
+            <input type="month" id="utilMonth" class="field" style="margin:0; flex:1;" value="${new Date().toISOString().slice(0,7)}">
+            <select id="utilType" class="field" style="margin:0; width: 110px;">
+              <option value="water">水道代</option>
+              <option value="energy">光熱費</option>
+            </select>
+          </div>
+          <input type="number" id="utilAmount" class="field" placeholder="金額を入力" style="margin-top: 10px;">
+          <button id="addUtilBtn" class="dark full">追加する</button>
+        </div>
+
+        <div class="card">
+          <h2>履歴</h2>
+          ${utils.slice().reverse().map((u:any) => `
+            <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 0; border-bottom:1px solid #edf0ee;">
+              <div>
+                <b style="font-size:14px; color:${u.type==='water'?'#2c7aab':'#c97622'}">${u.type === 'water' ? '水道代' : '光熱費'}</b>
+                <div class="muted" style="font-size:12px;">${u.month}</div>
+              </div>
+              <div style="text-align:right;">
+                <b>${yen(u.amount)}</b>
+                <br><button class="del-util ghost" data-id="${u.id}" style="color:#a13c29; padding:4px 8px; font-size:11px; margin-top:4px;">削除</button>
+              </div>
             </div>
-            <div class="expense-right">
-              <b>${yen(s.amount)}</b>
-            </div>
-          </div>`).join('') || '<p class="muted">まだありません</p>'}
+          `).join('') || '<p class="muted">まだありません</p>'}
         </div>
       </section>
 
@@ -353,7 +426,6 @@ async function view(tab = 'home') {
           ${['食費', '外食', '生活', '家賃', '光熱費', '交通', '娯楽', '旅行', 'その他'].map(x => `<option value="${x}">${x}</option>`).join('')}
         </select>
         
-        <!-- 下部にも押しやすい大きなボタンを配置 -->
         <button id="saveBottom" class="primary full" style="margin-top: 20px; font-size: 18px; padding: 14px;">この金額を追加</button>
       </section>
 
@@ -370,7 +442,6 @@ async function view(tab = 'home') {
 function calc() {
   let raw = val('#amount').replace(/,/g, '');
   if (!raw) return 0;
-  // ユーザーが最後に入力した「＋」などの記号を自動で無視して計算エラーを防ぐ
   raw = raw.replace(/[+\-*/.]+$/, ''); 
   if (!/^[0-9+\-*/(). ]+$/.test(raw)) return NaN;
   try {
@@ -392,7 +463,6 @@ function wire(state: any) {
     view('history');
   });
 
-  // タップを確実に拾うためのヘルパー関数
   const bindTouch = (selector: string, handler: (e: Event, el: HTMLElement) => void) => {
     document.querySelectorAll(selector).forEach((el: any) => {
       const h = (e: Event) => { e.preventDefault(); handler(e, el); };
@@ -430,12 +500,36 @@ function wire(state: any) {
     }
   });
 
-  // 精算の全額ボタン
+  // ホーム画面からの遷移
+  q('#heroCard')?.addEventListener('click', () => view('entry'));
+  q('#menuBtn')?.addEventListener('click', () => view('utilities'));
+  q('#closeUtils')?.addEventListener('click', () => view('home'));
+
+  // 光熱費・水道代の追加
+  q('#addUtilBtn')?.addEventListener('click', () => {
+    const month = val('#utilMonth');
+    const type = val('#utilType');
+    const amount = Number(val('#utilAmount'));
+    if (!month || !amount) return alert('月と金額を入力してください');
+    const utils = JSON.parse(localStorage.getItem(`utils_${pair}`) || '[]');
+    utils.push({ id: Date.now().toString(), month, type, amount });
+    localStorage.setItem(`utils_${pair}`, JSON.stringify(utils));
+    alert('登録しました');
+    view('utilities');
+  });
+
+  document.querySelectorAll('.del-util').forEach((b: any) => b.onclick = () => {
+    if (!confirm('この記録を削除しますか？')) return;
+    let utils = JSON.parse(localStorage.getItem(`utils_${pair}`) || '[]');
+    utils = utils.filter((u: any) => u.id !== b.dataset.id);
+    localStorage.setItem(`utils_${pair}`, JSON.stringify(utils));
+    view('utilities');
+  });
+
   q('#settleFullBtn')?.addEventListener('click', () => {
     q('#settleAmount').value = state.amount;
   });
 
-  // サブスク追加
   q('#addSubBtn')?.addEventListener('click', () => {
     const title = val('#subTitle').trim();
     const amount = Number(val('#subAmount'));
@@ -449,7 +543,6 @@ function wire(state: any) {
     view('settings');
   });
 
-  // サブスク削除
   document.querySelectorAll('.del-sub').forEach((b: any) => b.onclick = () => {
     if (!confirm('このサブスク設定を削除しますか？')) return;
     let subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
@@ -458,7 +551,6 @@ function wire(state: any) {
     view('settings');
   });
 
-  // サブスクからワンタップ入力
   document.querySelectorAll('.sub-fill-btn').forEach((b: any) => b.onclick = () => {
     const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
     const sub = subs.find((s: any) => s.id === b.dataset.id);
@@ -501,15 +593,10 @@ function wire(state: any) {
   
   document.querySelectorAll('[data-tab]').forEach((b: any) => b.onclick = () => view(b.dataset.tab));
   q('#out')?.addEventListener('click', logout);
-  
-  q('#add')?.addEventListener('click', () => {
-    view('entry');
-  });
-  
+  q('#add')?.addEventListener('click', () => view('entry'));
   q('#cancel')?.addEventListener('click', () => view('home'));
   q('#amount')?.addEventListener('input', showCalc);
   
-  // ワンタップで確実に保存させる処理（スマホキーボード問題対策）
   const handleSave = async (e: Event) => {
     e.preventDefault();
     await save();
