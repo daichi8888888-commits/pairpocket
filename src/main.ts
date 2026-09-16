@@ -5,6 +5,12 @@ const app = document.querySelector<HTMLDivElement>('#app')!;
 let uid = '', pair = '', members: any[] = [], expenses: any[] = [], balances: any[] = [], settlements: any[] = [];
 let currentMonth = 'all'; 
 
+const getToday = () => {
+  const d = new Date();
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 10);
+};
+
 const yen = (n: number) => `¥${Math.round(n).toLocaleString('ja-JP')}`;
 const esc = (s: any) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
@@ -65,7 +71,6 @@ async function view(tab = 'home') {
   const { data: p } = await supabase.from('pairs').select('name,invite_code').eq('id', pair).single();
   const name = (id: string) => members.find(x => x.user_id === id)?.profiles?.display_name || balances.find(x => x.user_id === id)?.display_name || 'メンバー';
   
-  // 削除済みの履歴を除外して合計と残高を計算
   const total = expenses.reduce((s, e) => {
     if (typeof e.title === 'string' && e.title.startsWith('[削除済]')) return s;
     return s + e.amount;
@@ -112,19 +117,18 @@ async function view(tab = 'home') {
   const filteredSettlements = settlements.filter(s => currentMonth === 'all' || new Date(s.settled_at).toISOString().startsWith(currentMonth));
   const myName = members.find(m => m.user_id === uid)?.profiles?.display_name || '';
 
-  // ローカルに保存されているサブスク（定額）の読み込み
   const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
 
-  // 精算の区切り線（タイムライン）を生成する処理
   let sIdx = 0;
   let expensesListHtml = '';
   filteredExpenses.forEach(e => {
+    // 支出日より前に精算された履歴があれば区切り線を引く
     while (sIdx < filteredSettlements.length) {
       const s = new Date(filteredSettlements[sIdx].settled_at);
       const sDate = s.getFullYear() + '-' + String(s.getMonth() + 1).padStart(2, '0') + '-' + String(s.getDate()).padStart(2, '0');
       if (sDate >= (e.expense_date || '')) {
         expensesListHtml += `<div style="border-top: 2px dashed #2f6c57; margin: 24px 0 16px; position: relative;">
-          <span style="position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: #fff; padding: 0 10px; color: #2f6c57; font-size: 11px; font-weight: bold;">
+          <span style="position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: #fff; padding: 0 10px; color: #2f6c57; font-size: 11px; font-weight: bold; white-space: nowrap;">
             ✂️ 精算完了 (${s.toLocaleDateString('ja-JP')})
           </span>
         </div>`;
@@ -165,7 +169,7 @@ async function view(tab = 'home') {
   while (sIdx < filteredSettlements.length) {
     const s = new Date(filteredSettlements[sIdx].settled_at);
     expensesListHtml += `<div style="border-top: 2px dashed #2f6c57; margin: 24px 0 16px; position: relative;">
-      <span style="position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: #fff; padding: 0 10px; color: #2f6c57; font-size: 11px; font-weight: bold;">
+      <span style="position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: #fff; padding: 0 10px; color: #2f6c57; font-size: 11px; font-weight: bold; white-space: nowrap;">
         ✂️ 精算完了 (${s.toLocaleDateString('ja-JP')})
       </span>
     </div>`;
@@ -179,7 +183,7 @@ async function view(tab = 'home') {
   app.innerHTML = `
     <style>
       .app { padding-top: max(20px, env(safe-area-inset-top)) !important; padding-bottom: max(100px, calc(env(safe-area-inset-bottom) + 80px)) !important; overflow-x: hidden; }
-      .tabs { padding-bottom: max(10px, env(safe-area-inset-bottom)) !important; }
+      .tabs { padding-bottom: max(10px, env(safe-area-inset-bottom)) !important; z-index: 100;}
       .history-scroll { max-height: 52vh; overflow-y: auto; padding-right: 12px; overscroll-behavior: contain; }
       .calc-buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 8px; margin-bottom: 12px; }
       .calc-buttons button { background: #eaf2ee; color: #2c604f; font-size: 20px; padding: 8px; font-weight: 800; cursor: pointer; }
@@ -259,7 +263,7 @@ async function view(tab = 'home') {
               <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 0; border-bottom:1px solid #edf0ee;">
                 <div>
                   <b style="font-size:14px;">${esc(s.title)}</b><br>
-                  <span class="muted" style="font-size:12px;">${yen(s.amount)} (支払: ${esc(name(s.payer_id))})</span>
+                  <span class="muted" style="font-size:12px;">${yen(s.amount)} (毎月${s.date ? s.date + '日' : '-'} / 支払: ${esc(name(s.payer_id))})</span>
                 </div>
                 <button class="del-sub ghost" data-id="${s.id}" style="color:#a13c29; padding:6px 10px; font-size:12px;">削除</button>
               </div>
@@ -270,6 +274,7 @@ async function view(tab = 'home') {
             <div style="display:flex; gap:6px; margin-top:4px;">
               <input id="subTitle" class="field" placeholder="名前 (例: 家賃)" style="margin:0; flex:1;">
               <input id="subAmount" type="number" class="field" placeholder="金額" style="margin:0; width:90px;">
+              <input id="subDate" type="number" class="field" placeholder="日" min="1" max="31" style="margin:0; width:60px;">
             </div>
             <select id="subPayer" class="field" style="margin:8px 0 0 0;">
               ${members.map((m, i) => `<option value="${m.user_id}" ${i===0?'selected':''}>${esc(name(m.user_id))}が支払う</option>`).join('')}
@@ -297,7 +302,7 @@ async function view(tab = 'home') {
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
           <button id="cancel" class="ghost" style="padding: 10px 14px;">キャンセル</button>
           <h2 style="margin: 0; font-size: 18px;">金額を追加</h2>
-          <button id="save" class="primary" style="padding: 10px 18px;">追加する</button>
+          <button id="saveTop" class="primary" style="padding: 10px 18px;">追加</button>
         </div>
 
         ${subs.length > 0 ? `
@@ -347,6 +352,9 @@ async function view(tab = 'home') {
           <option value="" selected>カテゴリーなし</option>
           ${['食費', '外食', '生活', '家賃', '光熱費', '交通', '娯楽', '旅行', 'その他'].map(x => `<option value="${x}">${x}</option>`).join('')}
         </select>
+        
+        <!-- 下部にも押しやすい大きなボタンを配置 -->
+        <button id="saveBottom" class="primary full" style="margin-top: 20px; font-size: 18px; padding: 14px;">この金額を追加</button>
       </section>
 
       <nav class="tabs">
@@ -360,8 +368,10 @@ async function view(tab = 'home') {
 }
 
 function calc() {
-  const raw = val('#amount').replace(/,/g, '');
+  let raw = val('#amount').replace(/,/g, '');
   if (!raw) return 0;
+  // ユーザーが最後に入力した「＋」などの記号を自動で無視して計算エラーを防ぐ
+  raw = raw.replace(/[+\-*/.]+$/, ''); 
   if (!/^[0-9+\-*/(). ]+$/.test(raw)) return NaN;
   try {
     const n = Function(`"use strict";return (${raw})`)();
@@ -382,17 +392,43 @@ function wire(state: any) {
     view('history');
   });
 
-  const calcBtns = document.querySelectorAll('[data-op], [data-plus], #clear, #split');
-  calcBtns.forEach((b: any) => {
-    b.addEventListener('mousedown', (e: Event) => e.preventDefault());
-  });
+  // タップを確実に拾うためのヘルパー関数
+  const bindTouch = (selector: string, handler: (e: Event, el: HTMLElement) => void) => {
+    document.querySelectorAll(selector).forEach((el: any) => {
+      const h = (e: Event) => { e.preventDefault(); handler(e, el); };
+      el.addEventListener('mousedown', h);
+      el.addEventListener('touchstart', h, { passive: false });
+    });
+  };
 
-  document.querySelectorAll('[data-op]').forEach((b: any) => b.addEventListener('click', () => {
+  bindTouch('[data-op]', (e, b: any) => {
     const input = q('#amount');
     input.value += b.dataset.op;
     showCalc();
-    input.focus(); 
-  }));
+    input.focus();
+  });
+
+  bindTouch('[data-plus]', (e, b: any) => {
+    const n = calc();
+    q('#amount').value = String((Number.isFinite(n) ? n : 0) + Number(b.dataset.plus));
+    showCalc();
+    q('#amount').focus();
+  });
+
+  bindTouch('#clear', () => {
+    q('#amount').value = '';
+    showCalc();
+    q('#amount').focus();
+  });
+
+  bindTouch('#split', () => {
+    const n = calc();
+    if (Number.isFinite(n) && n > 0) {
+      q('#amount').value = String(Math.round(n / 2));
+      showCalc();
+      q('#amount').focus();
+    }
+  });
 
   // 精算の全額ボタン
   q('#settleFullBtn')?.addEventListener('click', () => {
@@ -403,10 +439,11 @@ function wire(state: any) {
   q('#addSubBtn')?.addEventListener('click', () => {
     const title = val('#subTitle').trim();
     const amount = Number(val('#subAmount'));
+    const date = val('#subDate');
     const payer = val('#subPayer');
     if (!title || !amount) return alert('名前と金額を正しく入力してください');
     const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
-    subs.push({ id: Date.now().toString(), title, amount, payer_id: payer });
+    subs.push({ id: Date.now().toString(), title, amount, date, payer_id: payer });
     localStorage.setItem(`subs_${pair}`, JSON.stringify(subs));
     alert('サブスクを登録しました');
     view('settings');
@@ -472,37 +509,20 @@ function wire(state: any) {
   q('#cancel')?.addEventListener('click', () => view('home'));
   q('#amount')?.addEventListener('input', showCalc);
   
-  document.querySelectorAll('[data-plus]').forEach((b: any) => b.addEventListener('click', () => {
-    const n = calc();
-    q('#amount').value = String((Number.isFinite(n) ? n : 0) + Number(b.dataset.plus));
-    showCalc();
-    q('#amount').focus();
-  }));
+  // ワンタップで確実に保存させる処理（スマホキーボード問題対策）
+  const handleSave = async (e: Event) => {
+    e.preventDefault();
+    await save();
+  };
+  q('#saveTop')?.addEventListener('mousedown', handleSave);
+  q('#saveTop')?.addEventListener('touchstart', handleSave, { passive: false });
+  q('#saveBottom')?.addEventListener('mousedown', handleSave);
+  q('#saveBottom')?.addEventListener('touchstart', handleSave, { passive: false });
   
-  q('#clear')?.addEventListener('click', () => {
-    q('#amount').value = '';
-    showCalc();
-    q('#amount').focus();
-  });
-  
-  q('#split')?.addEventListener('click', () => {
-    const n = calc();
-    if (Number.isFinite(n) && n > 0) {
-      q('#amount').value = String(Math.round(n / 2));
-      showCalc();
-      q('#amount').focus();
-    }
-  });
-  
-  q('#save')?.addEventListener('click', save);
-  
-  // 精算ボタンの処理（入力された金額を使用する）
   q('#settleBtn')?.addEventListener('click', () => {
     const inputAmt = Number(val('#settleAmount'));
     if (!inputAmt || inputAmt <= 0) return alert('精算金額を正しく入力してください');
     if (inputAmt > state.amount) return alert('現在の精算残高より多い金額は入力できません');
-    
-    // 入力された金額をstateに上書きして精算関数へ
     state.amount = inputAmt;
     settle(state);
   });
@@ -556,7 +576,7 @@ async function save() {
     input_amount: amount,
     input_payer_id: val('#payer'),
     input_category: val('#cat') || 'その他',
-    input_expense_date: new Date().toISOString().slice(0, 10),
+    input_expense_date: getToday(),
     input_memo: null
   });
   if (error) return alert(error.message);
