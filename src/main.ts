@@ -111,7 +111,7 @@ async function view(tab = 'home') {
       .history-scroll { max-height: 55vh; overflow-y: auto; padding-right: 5px; }
       .calc-buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 8px; margin-bottom: 12px; }
       .calc-buttons button { background: #eaf2ee; color: #2c604f; font-size: 20px; padding: 8px; font-weight: 800; }
-      .deleted-log { opacity: 0.45; background: #f9f9f9; padding: 10px; margin: 4px 0; border-radius: 8px; }
+      .deleted-log { opacity: 0.5; background: #f9f9f9; padding: 10px; margin: 4px 0; border-radius: 8px; }
       .deleted-badge { color: #d9534f; font-weight: 800; font-size: 11px; border: 1px solid #d9534f; padding: 1px 4px; border-radius: 4px; margin-right: 4px; }
     </style>
     <main class="app">
@@ -139,24 +139,31 @@ async function view(tab = 'home') {
           </select>
         </div>
         <div class="card history-scroll">
-          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px;">支出履歴</h2>
+          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0;">支出履歴</h2>
           ${filteredExpenses.map(e => {
-            const isDel = typeof e.memo === 'string' && e.memo.startsWith('del:');
-            const amt = isDel ? Number(e.memo.split(':')[1]) : e.amount;
+            // [削除済] マーカーを検知し、元の金額とタイトルを復元する処理
+            const isDel = typeof e.title === 'string' && e.title.startsWith('[削除済]');
+            let displayTitle = e.title;
+            let displayAmount = e.amount;
+            if (isDel) {
+              const parts = e.title.replace('[削除済] ', '').split('::');
+              displayAmount = Number(parts[0]);
+              displayTitle = parts.slice(1).join('::');
+            }
             return `<div class="expense ${isDel ? 'deleted-log' : ''}">
               <div>
-                ${isDel ? `<del style="color:#888;"><b>${esc(e.title)}</b></del>` : `<b>${esc(e.title)}</b>`}
+                ${isDel ? `<del style="color:#888;"><b>${esc(displayTitle)}</b></del>` : `<b>${esc(displayTitle)}</b>`}
                 <div class="muted">${isDel ? '<span class="deleted-badge">削除済</span>' : ''}${esc(name(e.payer_id))}・${e.expense_date}</div>
               </div>
               <div>
-                ${isDel ? `<del style="color:#888;"><b>${yen(amt)}</b></del>` : `<b>${yen(amt)}</b>`}
+                ${isDel ? `<del style="color:#888;"><b>${yen(displayAmount)}</b></del>` : `<b>${yen(displayAmount)}</b>`}
                 ${!isDel ? `<button class="del" data-id="${e.id}">削除</button>` : ''}
               </div>
             </div>`;
           }).join('') || '<p class="muted">まだありません</p>'}
         </div>
         <div class="card history-scroll">
-          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px;">精算履歴</h2>
+          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0;">精算履歴</h2>
           ${filteredSettlements.map(s => `<div class="expense"><div><b>${esc(name(s.from_user_id))} → ${esc(name(s.to_user_id))}</b><div class="muted">${new Date(s.settled_at).toLocaleDateString('ja-JP')}</div></div><b>${yen(s.amount)}</b></div>`).join('') || '<p class="muted">まだありません</p>'}
         </div>
       </section>
@@ -181,17 +188,18 @@ async function view(tab = 'home') {
         <button id="out" class="ghost full">ログアウト</button>
       </section>
 
-      <section id="entry" class="card hide" style="position: relative; padding-top: 55px;">
-        <div style="position: absolute; top: 15px; left: 15px; right: 15px; display: flex; justify-content: space-between; align-items: center;">
+      <section id="entry" class="card ${tab === 'entry' ? '' : 'hide'}">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
           <button id="cancel" class="ghost" style="padding: 10px 14px;">キャンセル</button>
-          <h2 style="margin: 0; font-size: 16px;">金額を追加</h2>
+          <h2 style="margin: 0; font-size: 18px;">金額を追加</h2>
           <button id="save" class="primary" style="padding: 10px 18px;">追加する</button>
         </div>
         
         <label class="muted">金額または計算式</label>
         <div class="money">
           <span>¥</span>
-          <input id="amount" inputmode="text" placeholder="1200+350">
+          <!-- inputmode="decimal" でスマホの数字キーボードを呼び出します -->
+          <input id="amount" inputmode="decimal" placeholder="1200+350">
         </div>
         
         <div class="calc-buttons">
@@ -261,17 +269,7 @@ function wire(state: any) {
     view('history');
   });
 
-  // キーボード落ちを防ぐ処理 (touchstart / mousedown のデフォルト動作をキャンセル)
-  const preventFocusLoss = (e: Event) => {
-    e.preventDefault();
-  };
-
-  const calcBtns = document.querySelectorAll('[data-op], [data-plus], #clear, #split');
-  calcBtns.forEach((b: any) => {
-    b.addEventListener('mousedown', preventFocusLoss);
-    b.addEventListener('touchstart', preventFocusLoss, { passive: false });
-  });
-
+  // 四則演算ボタンの処理。押した後に入力欄にフォーカスを戻してキーボードを維持します
   document.querySelectorAll('[data-op]').forEach((b: any) => b.onclick = () => {
     const input = q('#amount');
     input.value += b.dataset.op;
@@ -309,13 +307,10 @@ function wire(state: any) {
   q('#out')?.addEventListener('click', logout);
   
   q('#add')?.addEventListener('click', () => {
-    ['home', 'history', 'settings'].forEach(x => q('#' + x).classList.add('hide'));
-    q('#entry').classList.remove('hide');
-    // 開いた瞬間にキーボードを出す場合は下のコメントアウトを外す
-    // setTimeout(() => q('#amount').focus(), 100); 
+    view('entry');
   });
   
-  q('#cancel')?.addEventListener('click', () => view());
+  q('#cancel')?.addEventListener('click', () => view('home'));
   q('#amount')?.addEventListener('input', showCalc);
   
   document.querySelectorAll('[data-plus]').forEach((b: any) => b.onclick = () => {
@@ -343,17 +338,17 @@ function wire(state: any) {
   q('#save')?.addEventListener('click', save);
   q('#settle')?.addEventListener('click', () => settle(state));
   
-  // 削除の確認ダイアログを廃止、即時反映
+  // 削除ボタンの処理
   document.querySelectorAll('.del').forEach((b: any) => b.onclick = async () => {
     const id = b.dataset.id;
     const e = expenses.find(x => x.id === id);
     if(e) {
-      // 1. まずUPDATEでログ（取り消し線）を残そうとする
-      const { error } = await supabase.from('expenses').update({ amount: 0, memo: 'del:' + e.amount }).eq('id', id);
+      // Supabaseの集計を狂わせないため金額を0にし、元の金額とタイトルを文字列で保存して復元する
+      const newTitle = '[削除済] ' + e.amount + '::' + (e.title || '支出');
+      const { error } = await supabase.from('expenses').update({ amount: 0, title: newTitle }).eq('id', id);
       
-      // 2. もしSupabaseの設定でUPDATEが禁止されている場合は、物理的に完全削除する
+      // もしDBの設定でUPDATEが禁止されている場合は、強制的に物理削除する
       if (error) {
-        console.warn('UPDATE権限がないため、物理削除しました:', error.message);
         await supabase.from('expenses').delete().eq('id', id);
       }
       
