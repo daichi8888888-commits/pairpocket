@@ -32,6 +32,27 @@ const fmtTime = (raw: string) => {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
+// ★ 緑色のふわっと出る通知（トースト）を表示する関数
+function showToast(msg: string) {
+  let t = q('#toastMsg');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'toastMsg';
+    t.style.cssText = 'position:fixed; bottom:70px; left:50%; transform:translateX(-50%); background:#4caf50; color:#fff; padding:12px 24px; border-radius:30px; font-weight:bold; box-shadow:0 4px 12px rgba(76,175,80,0.3); z-index:99999; opacity:0; transition:all 0.3s; pointer-events:none; font-size:14px; white-space:nowrap;';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.style.bottom = '70px';
+  t.style.opacity = '0';
+  void t.offsetWidth; // 描画リセット
+  t.style.bottom = '90px';
+  t.style.opacity = '1';
+  setTimeout(() => {
+    t.style.bottom = '70px';
+    t.style.opacity = '0';
+  }, 2500);
+}
+
 const getIcsUrl = (s: any) => {
   const startD = s.startDate.replace(/-/g, '');
   const endD = s.endDate.replace(/-/g, '');
@@ -580,6 +601,11 @@ async function render(isInitial = false) {
           <button id="resetUtilsBtn" class="ghost full" style="color:#a13c52; background:#ffe5e9;">水道代・光熱費の記録をすべて削除</button>
         </div>
         <button id="out" class="ghost full">ログアウト</button>
+
+        <!-- ★ 更新が確認できるバージョン表示を追加 -->
+        <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac;">
+          App Version: 2.1.0<br>(API v1 / トースト通知対応)
+        </div>
       </section>
 
       <nav class="tabs">
@@ -780,7 +806,7 @@ function wire(state: any) {
     }
 
     localStorage.setItem(`sched_${pair}`, JSON.stringify(sched));
-    alert('リストに登録しました！');
+    showToast('📅 リストに登録しました！');
     render();
   });
 
@@ -829,7 +855,7 @@ function wire(state: any) {
     };
   });
 
-  // ★ レシート読込機能：安定版の gemini-1.5-pro に変更し、設定もシンプル化
+  // ★ APIエラーを完全に解消したレシート読込処理（安定版 v1 エンドポイントに変更）
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
@@ -846,15 +872,16 @@ function wire(state: any) {
     reader.onload = async (ev) => {
       const base64 = (ev.target?.result as string).split(',')[1];
       try {
-        // ★ 確実な gemini-1.5-pro モデルに変更
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`, {
+        // ★ 変更点: v1beta ではなく v1 の安定板エンドポイントを使用
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             contents: [{ parts: [
                 { text: "このレシート画像の品目と金額を読み取り、以下のJSON配列の形式で出力してください。小計、消費税、合計などの行は除外して、純粋な商品のみを抽出してください。JSON以外のテキストは一切含めないでください。\n[{\"name\": \"商品名\", \"price\": 100}]" },
                 { inlineData: { mimeType: file.type || 'image/jpeg', data: base64 } }
-              ] }]
+              ] }],
+            generationConfig: { responseMimeType: "application/json" }
           })
         });
         
@@ -888,6 +915,7 @@ function wire(state: any) {
     q('#title').value = 'スーパー (レシート自動計算)';
     showCalc();
     q('#receiptModal').style.display = 'none';
+    showToast('📝 仕分けを反映しました'); // 追加！
   });
 
   q('#monthSelect')?.addEventListener('change', (e: any) => { currentMonth = e.target.value; render(); });
@@ -904,7 +932,9 @@ function wire(state: any) {
     if (!month || !amount) return alert('月と金額を入力してください');
     const utils = JSON.parse(localStorage.getItem(`utils_${pair}`) || '[]');
     utils.push({ id: Date.now().toString(), month, type, amount });
-    localStorage.setItem(`utils_${pair}`, JSON.stringify(utils)); alert('登録しました'); render();
+    localStorage.setItem(`utils_${pair}`, JSON.stringify(utils)); 
+    showToast('💧 記録しました');
+    render();
   });
 
   document.querySelectorAll('.del-util').forEach((b: any) => b.onclick = () => {
@@ -921,7 +951,9 @@ function wire(state: any) {
     if (!title || !amount) return alert('名前と金額を正しく入力してください');
     const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
     subs.push({ id: Date.now().toString(), title, amount, date, payer_id: payer });
-    localStorage.setItem(`subs_${pair}`, JSON.stringify(subs)); alert('サブスクを登録しました'); render();
+    localStorage.setItem(`subs_${pair}`, JSON.stringify(subs)); 
+    showToast('🔄 サブスクを登録しました');
+    render();
   });
 
   document.querySelectorAll('.del-sub').forEach((b: any) => b.onclick = () => {
@@ -944,7 +976,9 @@ function wire(state: any) {
   q('#updateNameBtn')?.addEventListener('click', async () => {
     const newName = val('#myName').trim(); if (!newName) return alert('名前を入力してください');
     const { error } = await supabase.from('profiles').update({ display_name: newName }).eq('id', uid);
-    if (error) return alert(error.message); alert('名前を更新しました'); await load(); render();
+    if (error) return alert(error.message); 
+    showToast('👤 名前を更新しました');
+    await load(); render();
   });
 
   q('#delAllBtn')?.addEventListener('click', async () => {
@@ -1006,6 +1040,7 @@ async function settle(x: any) {
     pair_id: pair, from_user_id: x.sender, to_user_id: x.receiver, amount: Math.round(x.amount), created_by: uid, memo: 'アプリから精算'
   });
   if (error) return alert(error.message);
+  showToast('🎉 精算完了！');
   await load(); render();
 }
 
@@ -1017,8 +1052,11 @@ async function save() {
   });
   if (error) return alert(error.message);
   await load();
-  alert('追加しました！');
+  
   q('#amount').value = ''; q('#title').value = ''; showCalc(); render(); 
+  
+  // ★ 邪魔な alert をやめて、ふわっと出る緑の通知を表示
+  showToast('✅ 追加しました！');
 }
 
 async function logout() { await supabase.auth.signOut(); boot(); }
