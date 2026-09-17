@@ -31,8 +31,7 @@ async function boot() {
   if (!data) return pairView();
   pair = data.pair_id;
   await load();
-  // ★起動後すぐに入力画面（entry）を表示する
-  view('entry');
+  view('entry'); // 起動時すぐに入力画面へ
 }
 
 function authView(msg = '') {
@@ -265,9 +264,21 @@ async function view(tab = 'entry') {
         <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 20px; position: absolute; right: 0; top: 0; border-radius: 12px;">☰</button>
       </div>
       
+      <!-- ★追加画面（一番上にボタンを配置しスクロール不要に） -->
       <section id="entry" class="${tab === 'entry' ? '' : 'hide'}">
-        <div class="card" style="margin-top: 20px;">
-          <div class="muted">相手への請求額</div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 15px; margin-bottom: 15px; padding: 0 4px;">
+          <h2 style="margin: 0; font-size: 20px; color: #3e3438;">新しく追加</h2>
+          <button id="saveTop" class="primary" style="padding: 12px 24px; font-size: 16px; border-radius: 20px; box-shadow: 0 4px 12px rgba(255, 130, 156, 0.4);">追加する</button>
+        </div>
+
+        ${subs.length > 0 ? `
+          <div style="overflow-x: auto; white-space: nowrap; padding-bottom: 8px; margin-bottom: 15px;">
+            ${subs.map((s:any) => `<div class="sub-fill-btn sub-chip" data-id="${s.id}">${esc(s.title)}</div>`).join('')}
+          </div>
+        ` : ''}
+
+        <div class="card" style="margin-top: 0;">
+          <label class="muted">相手への請求額</label>
           <div class="money" style="margin-top: 8px;">
             <span>¥</span>
             <input type="text" id="amount" inputmode="numeric" placeholder="1200+350" autofocus>
@@ -291,19 +302,11 @@ async function view(tab = 'entry') {
           
           <button id="split" class="split">÷ 2人で割り勘</button>
           
-          <!-- ★立替者は自分が初期選択されるように修正 -->
-          <label class="muted" style="margin-top: 15px; display: block;">立て替えた人</label>
+          <label class="muted" style="margin-top: 20px; display: block;">立て替えた人</label>
           <div class="payer-buttons">${members.map((m) => `<button type="button" class="payer-btn ${m.user_id === uid ? 'selected' : ''}" data-payer="${m.user_id}">${esc(name(m.user_id))}</button>`).join('')}</div>
           <input id="payer" type="hidden" value="${uid}">
           
           <div style="border-top: 1px solid #f0dfe4; margin: 20px 0 15px;"></div>
-
-          ${subs.length > 0 ? `
-            <label class="muted" style="font-size: 12px;">サブスク・定額から入力</label>
-            <div style="overflow-x: auto; white-space: nowrap; padding-bottom: 4px; margin-top: 6px; margin-bottom: 15px;">
-              ${subs.map((s:any) => `<div class="sub-fill-btn sub-chip" data-id="${s.id}">${esc(s.title)}</div>`).join('')}
-            </div>
-          ` : ''}
 
           <label class="muted">内容（任意）</label>
           <input id="title" class="field" placeholder="例：カフェ、スーパー">
@@ -313,8 +316,6 @@ async function view(tab = 'entry') {
             <option value="" selected>カテゴリーなし</option>
             ${['食費', '外食', '生活', '家賃', '光熱費', '交通', '娯楽', '旅行', 'その他'].map(x => `<option value="${x}">${x}</option>`).join('')}
           </select>
-          
-          <button id="saveTop" class="primary full" style="margin-top: 10px; font-size: 18px; padding: 14px; box-shadow: 0 4px 12px rgba(255, 130, 156, 0.3);">この請求を追加</button>
         </div>
       </section>
 
@@ -351,7 +352,6 @@ async function view(tab = 'entry') {
           </div>
         </div>
 
-        <!-- ★精算履歴のみのリスト。ここから精算の「取り消し」ができます -->
         <div class="card history-scroll">
           <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0; z-index: 1;">精算履歴</h2>
           ${filteredSettlements.map(s => `<div class="expense">
@@ -382,12 +382,6 @@ async function view(tab = 'entry') {
             </button>
           </div>
           ${graphHtml}
-          ${utilViewMode === 'trend' && sortedUtilMonths.length > 0 ? `
-            <div style="display: flex; gap: 15px; font-size: 12px; justify-content: center; margin-top: 15px; color: #556861; font-weight: bold;">
-              <div><span style="display:inline-block; width:14px; height:3px; background:#7ab8e6; margin-right:6px; vertical-align:middle;"></span>水道代</div>
-              <div><span style="display:inline-block; width:14px; height:3px; background:#ffaa77; margin-right:6px; vertical-align:middle;"></span>光熱費</div>
-            </div>
-          ` : ''}
         </div>
 
         <div class="card">
@@ -448,7 +442,7 @@ async function view(tab = 'entry') {
               <input id="subDate" type="number" class="field" placeholder="日" min="1" max="31" style="margin:0; width:60px;">
             </div>
             <select id="subPayer" class="field" style="margin:8px 0 0 0;">
-              ${members.map((m, i) => `<option value="${m.user_id}" ${m.user_id === uid ? 'selected' : ''}>${esc(name(m.user_id))}が支払う</option>`).join('')}
+              ${members.map((m) => `<option value="${m.user_id}" ${m.user_id === uid ? 'selected' : ''}>${esc(name(m.user_id))}が支払う</option>`).join('')}
             </select>
             <button id="addSubBtn" class="dark full" style="margin-top:8px;">登録する</button>
           </div>
@@ -505,42 +499,43 @@ function wire(state: any) {
     view('history');
   });
 
-  const bindTouch = (selector: string, handler: (e: Event, el: HTMLElement) => void) => {
-    document.querySelectorAll(selector).forEach((el: any) => {
-      const h = (e: Event) => { e.preventDefault(); handler(e, el); };
-      el.addEventListener('mousedown', h);
-      el.addEventListener('touchstart', h, { passive: false });
-    });
-  };
-
-  bindTouch('[data-op]', (e, b: any) => {
-    const input = q('#amount');
-    input.value += b.dataset.op;
-    showCalc();
-    input.focus();
+  // バグの原因だった複雑なタッチイベントを廃止し、シンプルで確実な onclick に統一
+  document.querySelectorAll('[data-op]').forEach((b: any) => {
+    b.onclick = () => {
+      const input = q('#amount');
+      input.value += b.dataset.op;
+      showCalc();
+      input.focus();
+    };
   });
 
-  bindTouch('[data-plus]', (e, b: any) => {
-    const n = calc();
-    q('#amount').value = String((Number.isFinite(n) ? n : 0) + Number(b.dataset.plus));
-    showCalc();
-    q('#amount').focus();
-  });
-
-  bindTouch('#clear', () => {
-    q('#amount').value = '';
-    showCalc();
-    q('#amount').focus();
-  });
-
-  bindTouch('#split', () => {
-    const n = calc();
-    if (Number.isFinite(n) && n > 0) {
-      q('#amount').value = String(Math.round(n / 2));
+  document.querySelectorAll('[data-plus]').forEach((b: any) => {
+    b.onclick = () => {
+      const n = calc();
+      q('#amount').value = String((Number.isFinite(n) ? n : 0) + Number(b.dataset.plus));
       showCalc();
       q('#amount').focus();
-    }
+    };
   });
+
+  if (q('#clear')) {
+    q('#clear').onclick = () => {
+      q('#amount').value = '';
+      showCalc();
+      q('#amount').focus();
+    };
+  }
+
+  if (q('#split')) {
+    q('#split').onclick = () => {
+      const n = calc();
+      if (Number.isFinite(n) && n > 0) {
+        q('#amount').value = String(Math.round(n / 2));
+        showCalc();
+        q('#amount').focus();
+      }
+    };
+  }
 
   q('#menuBtn')?.addEventListener('click', () => view('utilities'));
   q('#closeUtils')?.addEventListener('click', () => view('entry'));
@@ -645,12 +640,8 @@ function wire(state: any) {
   q('#out')?.addEventListener('click', logout);
   q('#amount')?.addEventListener('input', showCalc);
   
-  const handleSave = async (e: Event) => {
-    e.preventDefault();
-    await save();
-  };
-  q('#saveTop')?.addEventListener('mousedown', handleSave);
-  q('#saveTop')?.addEventListener('touchstart', handleSave, { passive: false });
+  // 追加ボタンはシンプルな onclick で発火させ、キーボード干渉バグを防ぐ
+  q('#saveTop')?.addEventListener('click', save);
   
   q('#settleBtn')?.addEventListener('click', () => {
     const inputAmt = Number(val('#settleAmount'));
@@ -684,7 +675,6 @@ function wire(state: any) {
     }
   });
 
-  // ★精算取り消し機能
   document.querySelectorAll('.undo-settle').forEach((b: any) => b.onclick = async () => {
     if (!confirm('この精算を取り消しますか？')) return;
     const id = b.dataset.id;
@@ -725,7 +715,7 @@ async function save() {
   await load();
   
   alert('追加しました！');
-  view('entry'); // 追加後、入力欄をクリアしてそのまま入力画面に留まる
+  view('entry'); 
 }
 
 async function logout() {
