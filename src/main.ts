@@ -31,11 +31,12 @@ async function boot() {
   if (!data) return pairView();
   pair = data.pair_id;
   await load();
-  view('home');
+  // ★起動後すぐに入力画面（entry）を表示する
+  view('entry');
 }
 
 function authView(msg = '') {
-  app.innerHTML = `<main class="app"><h1>PairPocket</h1>${msg ? `<div class="notice">${esc(msg)}</div>` : ''}<div class="card"><input id="email" class="field" type="email" placeholder="メール"><input id="pw" class="field" type="password" placeholder="パスワード"><div class="grid"><button id="up" class="ghost">新規登録</button><button id="in" class="dark">ログイン</button></div></div></main>`;
+  app.innerHTML = `<main class="app"><div class="brand" style="text-align: center; margin-bottom: 20px;">♥ PairPocket</div>${msg ? `<div class="notice">${esc(msg)}</div>` : ''}<div class="card"><h2>ふたりのお財布へ</h2><input id="email" class="field" type="email" placeholder="メール"><input id="pw" class="field" type="password" placeholder="パスワード"><div class="grid"><button id="up" class="ghost">新規登録</button><button id="in" class="primary">ログイン</button></div></div></main>`;
   q('#up').onclick = () => login(true);
   q('#in').onclick = () => login(false);
 }
@@ -48,7 +49,7 @@ async function login(up: boolean) {
 }
 
 function pairView(msg = '') {
-  app.innerHTML = `<main class="app"><h1>PairPocket</h1>${msg ? `<div class="notice">${esc(msg)}</div>` : ''}<div class="card"><h2>ペアを作る</h2><input id="pn" class="field" value="ふたりの家計"><button id="make" class="dark full">作成</button></div><div class="card"><h2>招待コードで参加</h2><input id="code" class="field"><button id="join" class="primary full">参加</button></div><button id="out" class="ghost full">ログアウト</button></main>`;
+  app.innerHTML = `<main class="app"><div class="brand" style="text-align: center; margin-bottom: 20px;">♥ PairPocket</div>${msg ? `<div class="notice">${esc(msg)}</div>` : ''}<div class="card"><h2>ふたりの部屋を作る</h2><input id="pn" class="field" value="ふたりの家計"><button id="make" class="primary full">作成</button></div><div class="card"><h2>招待コードで参加</h2><input id="code" class="field"><button id="join" class="dark full">参加</button></div><button id="out" class="ghost full" style="margin-top: 15px;">ログアウト</button></main>`;
   q('#out').onclick = logout;
   q('#make').onclick = async () => {
     const { error } = await supabase.rpc('create_pair', { pair_name: val('#pn') });
@@ -75,7 +76,7 @@ async function load() {
   settlements = s.data || [];
 }
 
-async function view(tab = 'home') {
+async function view(tab = 'entry') {
   const { data: p } = await supabase.from('pairs').select('name,invite_code').eq('id', pair).single();
   const name = (id: string) => members.find(x => x.user_id === id)?.profiles?.display_name || balances.find(x => x.user_id === id)?.display_name || 'メンバー';
   
@@ -143,37 +144,27 @@ async function view(tab = 'home') {
     const padX = 30; const padY = 20;
     const usableW = width - padX * 2;
     const usableH = height - padY * 2;
-    
     const step = sortedUtilMonths.length > 1 ? usableW / (sortedUtilMonths.length - 1) : usableW / 2;
     
-    const waterPts = sortedUtilMonths.map((m, i) => {
-      const x = sortedUtilMonths.length > 1 ? padX + i * step : padX + step;
-      const y = height - padY - (utilsMap[m].water / maxUtilAmt) * usableH;
-      return `${x},${y}`;
-    });
-    
-    const energyPts = sortedUtilMonths.map((m, i) => {
-      const x = sortedUtilMonths.length > 1 ? padX + i * step : padX + step;
-      const y = height - padY - (utilsMap[m].energy / maxUtilAmt) * usableH;
-      return `${x},${y}`;
-    });
+    const waterPts = sortedUtilMonths.map((m, i) => `${sortedUtilMonths.length > 1 ? padX + i * step : padX + step},${height - padY - (utilsMap[m].water / maxUtilAmt) * usableH}`);
+    const energyPts = sortedUtilMonths.map((m, i) => `${sortedUtilMonths.length > 1 ? padX + i * step : padX + step},${height - padY - (utilsMap[m].energy / maxUtilAmt) * usableH}`);
 
     const circlesHtml = sortedUtilMonths.map((m, i) => {
       const x = sortedUtilMonths.length > 1 ? padX + i * step : padX + step;
       const yw = height - padY - (utilsMap[m].water / maxUtilAmt) * usableH;
       const ye = height - padY - (utilsMap[m].energy / maxUtilAmt) * usableH;
       return `
-        <circle cx="${x}" cy="${yw}" r="5" fill="#4fa5d6" stroke="#fff" stroke-width="2" />
-        <circle cx="${x}" cy="${ye}" r="5" fill="#f2a65a" stroke="#fff" stroke-width="2" />
-        <text x="${x}" y="${height - 2}" font-size="11" fill="#718079" text-anchor="middle" font-weight="bold">${m.split('-')[1]}月</text>
+        <circle cx="${x}" cy="${yw}" r="5" fill="#7ab8e6" stroke="#fff" stroke-width="2" />
+        <circle cx="${x}" cy="${ye}" r="5" fill="#ffaa77" stroke="#fff" stroke-width="2" />
+        <text x="${x}" y="${height - 2}" font-size="11" fill="#9b8d93" text-anchor="middle" font-weight="bold">${m.split('-')[1]}月</text>
       `;
     }).join('');
 
     graphHtml = `
       <div style="width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-top: 5px;">
         <svg viewBox="0 0 ${width} ${height}" style="width: 100%; height: ${height}px; min-width: ${width}px; overflow: visible;">
-          <polyline points="${waterPts.join(' ')}" fill="none" stroke="#4fa5d6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-          <polyline points="${energyPts.join(' ')}" fill="none" stroke="#f2a65a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+          <polyline points="${waterPts.join(' ')}" fill="none" stroke="#7ab8e6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+          <polyline points="${energyPts.join(' ')}" fill="none" stroke="#ffaa77" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
           ${circlesHtml}
         </svg>
       </div>
@@ -190,14 +181,14 @@ async function view(tab = 'home') {
     graphHtml = `
       <div style="padding: 15px 0; text-align: center;">
         <div class="muted" style="margin-bottom: 5px;">全期間の月平均</div>
-        <div style="font-size: 32px; font-weight: 850; color: #18221f; margin-bottom: 20px;">${yen(avgTotal)}<span style="font-size:14px; font-weight:bold; color:#718079;"> /月</span></div>
+        <div style="font-size: 32px; font-weight: 850; color: #e7617d; margin-bottom: 20px;">${yen(avgTotal)}<span style="font-size:14px; font-weight:bold; color:#9b8d93;"> /月</span></div>
         <div style="display: flex; justify-content: center; gap: 40px; margin-top: 15px;">
           <div>
-            <div style="color: #4fa5d6; font-size: 13px; font-weight: bold; margin-bottom: 4px;">水道代 平均</div>
+            <div style="color: #7ab8e6; font-size: 13px; font-weight: bold; margin-bottom: 4px;">水道代 平均</div>
             <div style="font-size: 18px; font-weight: 800;">${yen(avgWater)}</div>
           </div>
           <div>
-            <div style="color: #f2a65a; font-size: 13px; font-weight: bold; margin-bottom: 4px;">光熱費 平均</div>
+            <div style="color: #ffaa77; font-size: 13px; font-weight: bold; margin-bottom: 4px;">光熱費 平均</div>
             <div style="font-size: 18px; font-weight: 800;">${yen(avgEnergy)}</div>
           </div>
         </div>
@@ -227,8 +218,8 @@ async function view(tab = 'home') {
 
     if (item.type === 'settlement') {
       const s = item.data;
-      timelineHtml += `<div style="border-top: 2px dashed #2f6c57; margin: 28px 0 20px; position: relative;">
-        <span style="position: absolute; top: -11px; left: 50%; transform: translateX(-50%); background: #fff; padding: 0 12px; color: #2f6c57; font-size: 11px; font-weight: bold; white-space: nowrap; border-radius: 12px; border: 1px solid #2f6c57;">
+      timelineHtml += `<div style="border-top: 2px dashed #d95875; margin: 28px 0 20px; position: relative;">
+        <span style="position: absolute; top: -11px; left: 50%; transform: translateX(-50%); background: #fff; padding: 0 12px; color: #d95875; font-size: 11px; font-weight: bold; white-space: nowrap; border-radius: 12px; border: 1px solid #d95875;">
           ✂️ 精算完了: ${yen(s.amount)} (${tStr})
         </span>
       </div>`;
@@ -245,18 +236,18 @@ async function view(tab = 'home') {
 
       timelineHtml += `<div class="expense ${isDel ? 'deleted-log' : ''}">
         <div class="expense-left">
-          ${isDel ? `<del style="color:#888;"><b class="break-text">${esc(displayTitle)}</b></del>` : `<b class="break-text">${esc(displayTitle)}</b>`}
+          ${isDel ? `<del style="color:#b5a6ac;"><b class="break-text">${esc(displayTitle)}</b></del>` : `<b class="break-text">${esc(displayTitle)}</b>`}
           <div class="muted break-text" style="margin-top: 4px; font-size: 12px;">
             ${isDel ? `<span class="deleted-badge">削除者: ${esc(delName)}</span>` : ''}
             ${esc(name(e.payer_id))}・${tStr}
           </div>
         </div>
         <div class="expense-right">
-          ${isDel ? `<del style="color:#888;"><b>${yen(e.amount)}</b></del>` : `<b>${yen(e.amount)}</b>`}
+          ${isDel ? `<del style="color:#b5a6ac;"><b>${yen(e.amount)}</b></del>` : `<b>${yen(e.amount)}</b>`}
           <div style="margin-top: 6px;">
             ${!isDel 
-              ? `<button class="del ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #a13c29; background: #fff0ed; border-radius: 8px;">削除</button>` 
-              : `<button class="restore ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #2c604f; background: #eaf2ee; border-radius: 8px;">戻す</button>`}
+              ? `<button class="del ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #bf4f68; border-radius: 8px;">削除</button>` 
+              : `<button class="restore ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #765d8b; border-radius: 8px;">戻す</button>`}
           </div>
         </div>
       </div>`;
@@ -268,50 +259,87 @@ async function view(tab = 'home') {
   }
 
   app.innerHTML = `
-    <style>
-      .app { padding-top: max(20px, env(safe-area-inset-top)) !important; padding-bottom: max(100px, calc(env(safe-area-inset-bottom) + 80px)) !important; overflow-x: hidden; }
-      .tabs { padding-bottom: max(10px, env(safe-area-inset-bottom)) !important; z-index: 100;}
-      .history-scroll { max-height: 60vh; overflow-y: auto; padding-right: 12px; overscroll-behavior: contain; }
-      .calc-buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 8px; margin-bottom: 12px; }
-      .calc-buttons button { background: #eaf2ee; color: #2c604f; font-size: 20px; padding: 8px; font-weight: 800; cursor: pointer; }
-      .deleted-log { opacity: 0.5; background: #f9f9f9; padding: 10px; margin: 4px 0; border-radius: 8px; }
-      .deleted-badge { color: #d9534f; font-weight: 800; font-size: 11px; border: 1px solid #d9534f; padding: 1px 4px; border-radius: 4px; margin-right: 4px; display: inline-block; }
-      .expense { display: flex; justify-content: space-between; gap: 6px; width: 100%; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid #edf0ee; }
-      .expense:last-child { border-bottom: none; }
-      .expense-left { flex: 1; min-width: 0; }
-      .expense-right { text-align: right; white-space: nowrap; margin-left: 5px; flex-shrink: 0; padding-right: 2px; }
-      .break-text { word-break: break-all; }
-      .sub-chip { display: inline-block; background: #edf1ef; color: #243c35; padding: 8px 12px; border-radius: 12px; font-size: 13px; font-weight: bold; white-space: nowrap; cursor: pointer; margin-right: 8px; }
-    </style>
     <main class="app">
       <div class="top" style="margin-top: 10px; position: relative;">
-        <div><div class="muted">ふたりのお金</div><h1>${esc(p?.name || 'PairPocket')}</h1></div>
+        <div><div class="brand">♥ PairPocket</div><div class="muted" style="margin-left: 2px;">${esc(p?.name || 'ふたりの家計')}</div></div>
         <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 20px; position: absolute; right: 0; top: 0; border-radius: 12px;">☰</button>
       </div>
       
+      <section id="entry" class="${tab === 'entry' ? '' : 'hide'}">
+        <div class="card" style="margin-top: 20px;">
+          <div class="muted">相手への請求額</div>
+          <div class="money" style="margin-top: 8px;">
+            <span>¥</span>
+            <input type="text" id="amount" inputmode="numeric" placeholder="1200+350" autofocus>
+          </div>
+          
+          <div class="calc-buttons">
+            <button type="button" data-op="+">＋</button>
+            <button type="button" data-op="-">－</button>
+            <button type="button" data-op="*">×</button>
+            <button type="button" data-op="/">÷</button>
+          </div>
+
+          <div id="result" class="result">計算結果：¥0</div>
+          
+          <div class="quick">
+            <button data-plus="100">+100</button>
+            <button data-plus="500">+500</button>
+            <button data-plus="1000">+1,000</button>
+            <button id="clear">クリア</button>
+          </div>
+          
+          <button id="split" class="split">÷ 2人で割り勘</button>
+          
+          <!-- ★立替者は自分が初期選択されるように修正 -->
+          <label class="muted" style="margin-top: 15px; display: block;">立て替えた人</label>
+          <div class="payer-buttons">${members.map((m) => `<button type="button" class="payer-btn ${m.user_id === uid ? 'selected' : ''}" data-payer="${m.user_id}">${esc(name(m.user_id))}</button>`).join('')}</div>
+          <input id="payer" type="hidden" value="${uid}">
+          
+          <div style="border-top: 1px solid #f0dfe4; margin: 20px 0 15px;"></div>
+
+          ${subs.length > 0 ? `
+            <label class="muted" style="font-size: 12px;">サブスク・定額から入力</label>
+            <div style="overflow-x: auto; white-space: nowrap; padding-bottom: 4px; margin-top: 6px; margin-bottom: 15px;">
+              ${subs.map((s:any) => `<div class="sub-fill-btn sub-chip" data-id="${s.id}">${esc(s.title)}</div>`).join('')}
+            </div>
+          ` : ''}
+
+          <label class="muted">内容（任意）</label>
+          <input id="title" class="field" placeholder="例：カフェ、スーパー">
+          
+          <label class="muted">カテゴリー</label>
+          <select id="cat" class="field">
+            <option value="" selected>カテゴリーなし</option>
+            ${['食費', '外食', '生活', '家賃', '光熱費', '交通', '娯楽', '旅行', 'その他'].map(x => `<option value="${x}">${x}</option>`).join('')}
+          </select>
+          
+          <button id="saveTop" class="primary full" style="margin-top: 10px; font-size: 18px; padding: 14px; box-shadow: 0 4px 12px rgba(255, 130, 156, 0.3);">この請求を追加</button>
+        </div>
+      </section>
+
       <section id="home" class="${tab === 'home' ? '' : 'hide'}">
-        <div class="card" style="padding: 24px; text-align: center;">
+        <div class="card hero" style="padding: 24px; text-align: center; margin-top: 20px;">
           <div class="muted" style="margin-bottom: 12px;">現在の精算</div>
-          ${members.length < 2 ? '<h2>相手の参加待ち</h2>' : amount < 1 ? '<div class="settled" style="font-size: 18px;">精算はありません</div>' : `
+          ${members.length < 2 ? '<h2>相手の参加待ち</h2>' : amount < 1 ? '<div class="big" style="font-size: 28px; margin: 15px 0;">ぴったり ✓</div>' : `
             <h2 style="font-size: 22px; margin-bottom: 10px;">${esc(name(sender))} → ${esc(name(receiver))}</h2>
-            <div class="big" style="color: #d9534f; margin-bottom: 20px;">${yen(amount)}</div>
+            <div class="big" style="margin-bottom: 20px;">${yen(amount)}</div>
             
-            <div style="border-top: 1px solid #edf0ee; padding-top: 20px; text-align: left;">
-              <label class="muted" style="font-size: 12px;">今回精算する金額</label>
+            <div style="border-top: 1px solid rgba(255,255,255,0.3); padding-top: 20px; text-align: left;">
+              <label style="font-size: 12px; color: rgba(255,255,255,0.8);">今回精算する金額</label>
               <div style="display: flex; gap: 8px; margin-top: 6px;">
-                <input type="number" id="settleAmount" class="field" style="margin: 0; flex: 1; font-size: 18px; font-weight: bold;" value="${amount}">
-                <button id="settleFullBtn" class="ghost" style="white-space: nowrap;">全額</button>
+                <input type="number" id="settleAmount" class="field" style="margin: 0; flex: 1; font-size: 18px; font-weight: bold; color:#3e3438;" value="${amount}">
+                <button id="settleFullBtn" style="background: rgba(255,255,255,0.2); color: #fff; white-space: nowrap;">全額</button>
               </div>
-              <button id="settleBtn" class="settle" style="margin-top: 15px; font-size: 16px;">この金額で精算する</button>
+              <button id="settleBtn" class="settle" style="background: #fff; color: #e7617d; margin-top: 15px; font-size: 16px;">この金額で精算する</button>
             </div>
           `}
         </div>
-        <button id="add" class="primary full" style="padding: 20px; font-size: 18px; box-shadow: 0 4px 12px rgba(239, 131, 84, 0.3);">＋ 新しく追加する</button>
       </section>
 
       <section id="history" class="${tab === 'history' ? '' : 'hide'}">
-        <div class="card" style="padding: 10px 18px;">
-          <select id="monthSelect" class="field" style="margin:0; font-weight:bold; background:#f9f9f9;">
+        <div class="card" style="padding: 10px 18px; margin-top: 20px;">
+          <select id="monthSelect" class="field" style="margin:0; font-weight:bold;">
             <option value="all" ${currentMonth === 'all' ? 'selected' : ''}>すべての履歴を表示</option>
             ${months.map(m => `<option value="${m}" ${currentMonth === m ? 'selected' : ''}>${m.split('-')[0]}年${m.split('-')[1]}月</option>`).join('')}
           </select>
@@ -322,10 +350,25 @@ async function view(tab = 'home') {
             ${timelineHtml}
           </div>
         </div>
+
+        <!-- ★精算履歴のみのリスト。ここから精算の「取り消し」ができます -->
+        <div class="card history-scroll">
+          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0; z-index: 1;">精算履歴</h2>
+          ${filteredSettlements.map(s => `<div class="expense">
+            <div class="expense-left">
+              <b class="break-text">${esc(name(s.from_user_id))} → ${esc(name(s.to_user_id))}</b>
+              <div class="muted">${new Date(s.settled_at).toLocaleDateString('ja-JP')}</div>
+            </div>
+            <div class="expense-right">
+              <b style="font-size: 16px;">${yen(s.amount)}</b>
+              <br><button class="undo-settle ghost" data-id="${s.id}" style="color:#bf4f68; padding:4px 10px; font-size:11px; margin-top:6px; border-radius:6px;">取り消す</button>
+            </div>
+          </div>`).join('') || '<p class="muted">まだありません</p>'}
+        </div>
       </section>
 
       <section id="utilities" class="${tab === 'utilities' ? '' : 'hide'}">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
           <button id="closeUtils" class="ghost" style="padding: 10px 14px;">戻る</button>
           <h2 style="margin: 0; font-size: 18px;">水道・光熱費 管理</h2>
           <div style="width: 60px;"></div>
@@ -341,8 +384,8 @@ async function view(tab = 'home') {
           ${graphHtml}
           ${utilViewMode === 'trend' && sortedUtilMonths.length > 0 ? `
             <div style="display: flex; gap: 15px; font-size: 12px; justify-content: center; margin-top: 15px; color: #556861; font-weight: bold;">
-              <div><span style="display:inline-block; width:14px; height:3px; background:#4fa5d6; margin-right:6px; vertical-align:middle;"></span>水道代</div>
-              <div><span style="display:inline-block; width:14px; height:3px; background:#f2a65a; margin-right:6px; vertical-align:middle;"></span>光熱費</div>
+              <div><span style="display:inline-block; width:14px; height:3px; background:#7ab8e6; margin-right:6px; vertical-align:middle;"></span>水道代</div>
+              <div><span style="display:inline-block; width:14px; height:3px; background:#ffaa77; margin-right:6px; vertical-align:middle;"></span>光熱費</div>
             </div>
           ` : ''}
         </div>
@@ -363,14 +406,14 @@ async function view(tab = 'home') {
         <div class="card">
           <h2>履歴</h2>
           ${utils.slice().reverse().map((u:any) => `
-            <div style="display:flex; justify-content:space-between; align-items:center; padding: 12px 0; border-bottom:1px solid #edf0ee;">
+            <div style="display:flex; justify-content:space-between; align-items:center; padding: 12px 0; border-bottom:1px solid #f5e9ed;">
               <div>
-                <b style="font-size:15px; color:${u.type==='water'?'#2c7aab':'#c97622'}">${u.type === 'water' ? '水道代' : '光熱費'}</b>
+                <b style="font-size:15px; color:${u.type==='water'?'#5995bd':'#d88c5f'}">${u.type === 'water' ? '水道代' : '光熱費'}</b>
                 <div class="muted" style="font-size:12px; margin-top: 2px;">${u.month}</div>
               </div>
               <div style="text-align:right;">
                 <b style="font-size: 16px;">${yen(u.amount)}</b>
-                <br><button class="del-util ghost" data-id="${u.id}" style="color:#a13c29; padding:4px 10px; font-size:11px; margin-top:6px; border-radius:6px;">削除</button>
+                <br><button class="del-util ghost" data-id="${u.id}" style="color:#bf4f68; padding:4px 10px; font-size:11px; margin-top:6px; border-radius:6px;">削除</button>
               </div>
             </div>
           `).join('') || '<p class="muted" style="text-align:center; padding:10px 0;">まだありません</p>'}
@@ -378,9 +421,9 @@ async function view(tab = 'home') {
       </section>
 
       <section id="settings" class="${tab === 'settings' ? '' : 'hide'}">
-        <div class="card">
+        <div class="card" style="margin-top: 20px;">
           <h2>招待コード</h2>
-          <div class="big">${esc(p?.invite_code)}</div><p>${members.length}/2人</p>
+          <div class="big" style="color: #e7617d;">${esc(p?.invite_code)}</div><p class="muted">${members.length}/2人</p>
         </div>
         
         <div class="card">
@@ -388,16 +431,16 @@ async function view(tab = 'home') {
           <p class="muted" style="font-size:12px; margin-top:0;">登録しておくと、金額追加画面でワンタップで入力できます。</p>
           <div id="subsList" style="margin-bottom: 12px;">
             ${subs.map((s:any) => `
-              <div style="display:flex; justify-content:space-between; align-items:center; padding: 10px 0; border-bottom:1px solid #edf0ee;">
+              <div style="display:flex; justify-content:space-between; align-items:center; padding: 10px 0; border-bottom:1px solid #f5e9ed;">
                 <div>
                   <b style="font-size:14px;">${esc(s.title)}</b><br>
                   <span class="muted" style="font-size:12px;">${yen(s.amount)} (毎月${s.date ? s.date + '日' : '-'} / 支払: ${esc(name(s.payer_id))})</span>
                 </div>
-                <button class="del-sub ghost" data-id="${s.id}" style="color:#a13c29; padding:6px 10px; font-size:12px; border-radius: 8px;">削除</button>
+                <button class="del-sub ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:12px; border-radius: 8px;">削除</button>
               </div>
             `).join('') || '<p class="muted" style="text-align:center; padding: 10px 0;">登録されていません</p>'}
           </div>
-          <div style="background: #f9f9f9; padding: 12px; border-radius: 12px;">
+          <div style="background: #fffafb; padding: 12px; border-radius: 12px; border: 1px solid #f0dfe4;">
             <label class="muted" style="font-size:12px;">新しいサブスクを登録</label>
             <div style="display:flex; gap:6px; margin-top:4px;">
               <input id="subTitle" class="field" placeholder="名前 (例: 家賃)" style="margin:0; flex:1;">
@@ -405,7 +448,7 @@ async function view(tab = 'home') {
               <input id="subDate" type="number" class="field" placeholder="日" min="1" max="31" style="margin:0; width:60px;">
             </div>
             <select id="subPayer" class="field" style="margin:8px 0 0 0;">
-              ${members.map((m, i) => `<option value="${m.user_id}" ${i===0?'selected':''}>${esc(name(m.user_id))}が支払う</option>`).join('')}
+              ${members.map((m, i) => `<option value="${m.user_id}" ${m.user_id === uid ? 'selected' : ''}>${esc(name(m.user_id))}が支払う</option>`).join('')}
             </select>
             <button id="addSubBtn" class="dark full" style="margin-top:8px;">登録する</button>
           </div>
@@ -419,75 +462,17 @@ async function view(tab = 'home') {
             <button id="updateNameBtn" class="dark" style="min-width:70px;">更新</button>
           </div>
         </div>
-        <div class="card" style="border: 2px solid #ffe9e4; background: #fffcfc;">
-          <h2 style="color:#9c2e1c; margin-top:0;">危険な操作</h2>
-          <button id="delAllBtn" class="ghost full" style="color:#9c2e1c; background:#ffe9e4; margin-bottom: 12px;">すべての履歴を削除する</button>
-          
-          <button id="resetUtilsBtn" class="ghost full" style="color:#9c2e1c; background:#ffe9e4;">水道代・光熱費の記録をすべて削除</button>
+        <div class="card" style="border: 2px solid #ffe5e9; background: #fffcfc;">
+          <h2 style="color:#a13c52; margin-top:0;">危険な操作</h2>
+          <button id="delAllBtn" class="ghost full" style="color:#a13c52; background:#ffe5e9; margin-bottom: 12px;">すべての履歴を削除する</button>
+          <button id="resetUtilsBtn" class="ghost full" style="color:#a13c52; background:#ffe5e9;">水道代・光熱費の記録をすべて削除</button>
         </div>
         <button id="out" class="ghost full">ログアウト</button>
       </section>
 
-      <section id="entry" class="card ${tab === 'entry' ? '' : 'hide'}">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-          <button id="cancel" class="ghost" style="padding: 10px 14px;">キャンセル</button>
-          <h2 style="margin: 0; font-size: 18px;">金額を追加</h2>
-          <button id="saveTop" class="primary" style="padding: 10px 18px;">追加</button>
-        </div>
-
-        ${subs.length > 0 ? `
-          <div style="margin-bottom: 15px; background: #fdfdfd; padding: 10px; border-radius: 12px; border: 1px solid #edf0ee;">
-            <label class="muted" style="font-size: 12px;">サブスク・定額から入力</label>
-            <div style="overflow-x: auto; white-space: nowrap; padding-bottom: 4px; margin-top: 6px;">
-              ${subs.map((s:any) => `<div class="sub-fill-btn sub-chip" data-id="${s.id}">${esc(s.title)}</div>`).join('')}
-            </div>
-          </div>
-        ` : ''}
-        
-        <label class="muted">金額または計算式</label>
-        <div class="money">
-          <span>¥</span>
-          <input type="text" id="amount" inputmode="numeric" placeholder="1200+350">
-        </div>
-        
-        <div class="calc-buttons">
-          <button type="button" data-op="+">＋</button>
-          <button type="button" data-op="-">－</button>
-          <button type="button" data-op="*">×</button>
-          <button type="button" data-op="/">÷</button>
-        </div>
-
-        <div id="result" class="result">計算結果：¥0</div>
-        
-        <div class="quick">
-          <button data-plus="100">+100</button>
-          <button data-plus="500">+500</button>
-          <button data-plus="1000">+1,000</button>
-          <button id="clear">クリア</button>
-        </div>
-        
-        <button id="split" class="split">÷ 2人で割り勘</button>
-        
-        <label class="muted" style="margin-top: 15px; display: block;">支払った人</label>
-        <div class="payer-buttons">${members.map((m, i) => `<button type="button" class="payer-btn ${i === 0 ? 'selected' : ''}" data-payer="${m.user_id}">${esc(name(m.user_id))}</button>`).join('')}</div>
-        <input id="payer" type="hidden" value="${members[0]?.user_id || ''}">
-        
-        <div style="border-top: 1px solid #edf0ee; margin: 20px 0 15px;"></div>
-
-        <label class="muted">内容（任意）</label>
-        <input id="title" class="field" placeholder="例：スーパー、カフェ">
-        
-        <label class="muted">カテゴリー</label>
-        <select id="cat" class="field">
-          <option value="" selected>カテゴリーなし</option>
-          ${['食費', '外食', '生活', '家賃', '光熱費', '交通', '娯楽', '旅行', 'その他'].map(x => `<option value="${x}">${x}</option>`).join('')}
-        </select>
-        
-        <button id="saveBottom" class="primary full" style="margin-top: 20px; font-size: 18px; padding: 14px;">この金額を追加</button>
-      </section>
-
       <nav class="tabs">
-        <button data-tab="home">ホーム</button>
+        <button data-tab="entry">＋ 入力</button>
+        <button data-tab="home">精算</button>
         <button data-tab="history">履歴</button>
         <button data-tab="settings">設定</button>
       </nav>
@@ -558,7 +543,7 @@ function wire(state: any) {
   });
 
   q('#menuBtn')?.addEventListener('click', () => view('utilities'));
-  q('#closeUtils')?.addEventListener('click', () => view('home'));
+  q('#closeUtils')?.addEventListener('click', () => view('entry'));
   q('#utilModeToggle')?.addEventListener('click', () => {
     utilViewMode = utilViewMode === 'trend' ? 'average' : 'trend';
     view('utilities');
@@ -658,8 +643,6 @@ function wire(state: any) {
   
   document.querySelectorAll('[data-tab]').forEach((b: any) => b.onclick = () => view(b.dataset.tab));
   q('#out')?.addEventListener('click', logout);
-  q('#add')?.addEventListener('click', () => view('entry'));
-  q('#cancel')?.addEventListener('click', () => view('home'));
   q('#amount')?.addEventListener('input', showCalc);
   
   const handleSave = async (e: Event) => {
@@ -668,8 +651,6 @@ function wire(state: any) {
   };
   q('#saveTop')?.addEventListener('mousedown', handleSave);
   q('#saveTop')?.addEventListener('touchstart', handleSave, { passive: false });
-  q('#saveBottom')?.addEventListener('mousedown', handleSave);
-  q('#saveBottom')?.addEventListener('touchstart', handleSave, { passive: false });
   
   q('#settleBtn')?.addEventListener('click', () => {
     const inputAmt = Number(val('#settleAmount'));
@@ -702,6 +683,15 @@ function wire(state: any) {
       await load(); view('history');
     }
   });
+
+  // ★精算取り消し機能
+  document.querySelectorAll('.undo-settle').forEach((b: any) => b.onclick = async () => {
+    if (!confirm('この精算を取り消しますか？')) return;
+    const id = b.dataset.id;
+    const { error } = await supabase.from('settlements').delete().eq('id', id);
+    if (error) { alert('取り消しに失敗しました。\n' + error.message); return; }
+    await load(); view('history');
+  });
 }
 
 async function settle(x: any) {
@@ -716,7 +706,7 @@ async function settle(x: any) {
   });
   if (error) return alert(error.message);
   await load();
-  view();
+  view('home');
 }
 
 async function save() {
@@ -733,7 +723,9 @@ async function save() {
   });
   if (error) return alert(error.message);
   await load();
-  view('home'); 
+  
+  alert('追加しました！');
+  view('entry'); // 追加後、入力欄をクリアしてそのまま入力画面に留まる
 }
 
 async function logout() {
