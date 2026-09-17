@@ -5,7 +5,7 @@ const app = document.querySelector<HTMLDivElement>('#app')!;
 let uid = '', pair = '', members: any[] = [], expenses: any[] = [], balances: any[] = [], settlements: any[] = [];
 let currentMonth = 'all'; 
 let utilViewMode: 'trend' | 'average' = 'trend'; 
-let currentTab = 'entry'; // 現在のタブを記憶してシームレスに切り替える
+let currentTab = 'entry'; 
 
 const getToday = () => {
   const d = new Date();
@@ -23,23 +23,46 @@ const fmtTime = (raw: string) => {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
-// iPhoneカレンダーに登録するためのICSファイルを生成
 const getIcsUrl = (title: string, date: string) => {
-  const d = date.replace(/-/g, '');
-  const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART;VALUE=DATE:${d}\nDTEND;VALUE=DATE:${d}\nSUMMARY:${title}\nEND:VEVENT\nEND:VCALENDAR`;
+  const start = date.replace(/-/g, '');
+  const d = new Date(date); d.setDate(d.getDate() + 1);
+  const end = d.toISOString().slice(0, 10).replace(/-/g, '');
+  const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART;VALUE=DATE:${start}\nDTEND;VALUE=DATE:${end}\nSUMMARY:${title}\nEND:VEVENT\nEND:VCALENDAR`;
   return `data:text/calendar;charset=utf8,${encodeURIComponent(ics)}`;
+};
+
+const getGoogleCalUrl = (title: string, date: string) => {
+  const start = date.replace(/-/g, '');
+  const d = new Date(date); d.setDate(d.getDate() + 1);
+  const end = d.toISOString().slice(0, 10).replace(/-/g, '');
+  return `https://www.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${start}/${end}`;
 };
 
 async function boot() {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return authView();
   uid = session.user.id;
+
+  // ★ 爆速表示のためのキャッシュ読み込み ★
+  const cached = localStorage.getItem('pp_cache');
+  if (cached) {
+    try {
+      const x = JSON.parse(cached);
+      if (x.uid === uid) {
+        pair = x.pair; members = x.members || []; expenses = x.expenses || [];
+        settlements = x.settlements || []; balances = x.balances || [];
+        render(true); // 通信を待たずに保存済みのデータで一瞬で画面を描画
+      }
+    } catch {}
+  }
+
+  // 裏側で最新データをサーバーから取得
   const { data, error } = await supabase.from('pair_members').select('pair_id').eq('user_id', uid).maybeSingle();
   if (error) return fail(error.message);
   if (!data) return pairView();
   pair = data.pair_id;
   await load();
-  render(); 
+  render(false); // 最新データにこっそり更新
 }
 
 function authView(msg = '') {
@@ -77,13 +100,12 @@ async function load() {
   ]);
   const er = m.error || e.error || b.error || s.error;
   if (er) return fail(er.message);
-  members = m.data || [];
-  expenses = e.data || [];
-  balances = b.data || [];
-  settlements = s.data || [];
+  members = m.data || []; expenses = e.data || []; balances = b.data || []; settlements = s.data || [];
+  
+  // 次回の爆速起動のために最新データをスマホに一時保存
+  localStorage.setItem('pp_cache', JSON.stringify({ uid, pair, members, expenses, balances, settlements }));
 }
 
-// タブを超高速で切り替えるための関数（再描画しないのでラグゼロ！）
 function setTab(tab: string) {
   currentTab = tab;
   ['entry', 'home', 'history', 'settings', 'utilities', 'schedule'].forEach(x => {
@@ -91,10 +113,8 @@ function setTab(tab: string) {
     if (el) el.style.display = (x === tab) ? 'block' : 'none';
   });
   
-  // スライドメニューを閉じる
   q('#menuDrawer')?.classList.add('hide');
 
-  // 下のタブバーの色を更新
   document.querySelectorAll('.tabs button').forEach((b: any) => {
     if (['entry', 'home', 'history', 'settings'].includes(b.dataset.tab)) {
       b.style.fontWeight = b.dataset.tab === tab ? '900' : 'normal';
@@ -103,9 +123,20 @@ function setTab(tab: string) {
   });
 }
 
-// 画面全体を作る関数（データが変更された時だけ呼ばれる）
-async function render() {
-  const { data: p } = await supabase.from('pairs').select('name,invite_code').eq('id', pair).single();
+// 描画処理 (isInitial は初回キャッシュロードかどうか)
+async function render(isInitial = false) {
+  // すでに入力中のテキストがあれば保持して、再描画で消えないようにする
+  const currentAmt = val('#amount');
+  const currentTitle = val('#title');
+
+  let pairName = 'ふたりの家計';
+  let inviteCode = '';
+  // ネットワーク通信を待たずに描画するため、キャッシュがない時は名前を省略
+  if (!isInitial) {
+    const { data: p } = await supabase.from('pairs').select('name,invite_code').eq('id', pair).single();
+    if (p) { pairName = p.name; inviteCode = p.invite_code; }
+  }
+
   const name = (id: string) => members.find(x => x.user_id === id)?.profiles?.display_name || balances.find(x => x.user_id === id)?.display_name || 'メンバー';
   
   let bals: Record<string, number> = {};
@@ -155,7 +186,6 @@ async function render() {
   const utils = JSON.parse(localStorage.getItem(`utils_${pair}`) || '[]');
   const schedules = JSON.parse(localStorage.getItem(`sched_${pair}`) || '[]');
 
-  // 水道・光熱費グラフの生成
   const utilsMap: Record<string, {water: number, energy: number}> = {};
   utils.forEach((u: any) => {
     if (!utilsMap[u.month]) utilsMap[u.month] = { water: 0, energy: 0 };
@@ -202,7 +232,6 @@ async function render() {
     graphHtml = `<div style="padding: 15px 0; text-align: center;"><div class="muted" style="margin-bottom: 5px;">全期間の月平均</div><div style="font-size: 32px; font-weight: 850; color: #e7617d; margin-bottom: 20px;">${yen(avgWater + avgEnergy)}<span style="font-size:14px; font-weight:bold; color:#9b8d93;"> /月</span></div><div style="display: flex; justify-content: center; gap: 40px; margin-top: 15px;"><div><div style="color: #7ab8e6; font-size: 13px; font-weight: bold; margin-bottom: 4px;">水道代 平均</div><div style="font-size: 18px; font-weight: 800;">${yen(avgWater)}</div></div><div><div style="color: #ffaa77; font-size: 13px; font-weight: bold; margin-bottom: 4px;">光熱費 平均</div><div style="font-size: 18px; font-weight: 800;">${yen(avgEnergy)}</div></div></div></div>`;
   }
 
-  // タイムライン構築
   const timeline: any[] = [];
   filteredExpenses.forEach(e => timeline.push({ type: 'expense', raw: e.created_at || (e.expense_date + 'T00:00:00Z'), data: e }));
   filteredSettlements.forEach(s => timeline.push({ type: 'settlement', raw: s.settled_at, data: s }));
@@ -255,15 +284,14 @@ async function render() {
 
   if (timeline.length === 0) timelineHtml = '<p class="muted" style="text-align: center; padding: 20px 0;">まだありません</p>';
 
-  // HTMLの骨組み（これ以降は基本的に再構築せず、表示非表示だけ切り替える）
   app.innerHTML = `
     <main class="app">
       <div class="top" style="margin-top: 10px; position: relative;">
-        <div><div class="brand">♥ PairPocket</div><div class="muted" style="margin-left: 2px;">${esc(p?.name || 'ふたりの家計')}</div></div>
+        <div><div class="brand">♥ PairPocket</div><div class="muted" style="margin-left: 2px;">${esc(pairName)}</div></div>
         <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 20px; position: absolute; right: 0; top: 0; border-radius: 12px;">☰</button>
       </div>
       
-      <!-- スライドメニュー（ドロワー） -->
+      <!-- スライドメニュー -->
       <div id="menuDrawer" class="hide" style="position: fixed; top: 0; right: 0; bottom: 0; left: 0; background: rgba(0,0,0,0.4); z-index: 9999; backdrop-filter: blur(2px);">
         <div style="position: absolute; top: 0; right: 0; bottom: 0; width: 260px; background: #fffcfc; padding: 20px; box-shadow: -4px 0 15px rgba(0,0,0,0.1);">
           <button id="closeDrawerBtn" class="ghost" style="position: absolute; top: max(20px, env(safe-area-inset-top)); right: 20px; border-radius: 50%; width: 40px; height: 40px; padding: 0; display:flex; align-items:center; justify-content:center; font-size: 20px;">×</button>
@@ -292,7 +320,8 @@ async function render() {
           <label class="muted">相手への請求額</label>
           <div class="money" style="margin-top: 8px;">
             <span>¥</span>
-            <input type="text" id="amount" inputmode="numeric" placeholder="1200+350">
+            <!-- ★起動時にすぐ打てるよう autofocus を追加 -->
+            <input type="text" id="amount" inputmode="numeric" placeholder="1200+350" value="${currentAmt}" autofocus>
           </div>
           
           <div class="calc-buttons">
@@ -316,7 +345,7 @@ async function render() {
           <div style="border-top: 1px solid #f0dfe4; margin: 20px 0 15px;"></div>
 
           <label class="muted">内容（任意）</label>
-          <input id="title" class="field" placeholder="例：カフェ、スーパー">
+          <input id="title" class="field" placeholder="例：カフェ、スーパー" value="${currentTitle}">
           
           <label class="muted">カテゴリー</label>
           <select id="cat" class="field">
@@ -363,7 +392,7 @@ async function render() {
         </div>
       </section>
 
-      <!-- スケジュールタブ（新機能） -->
+      <!-- スケジュールタブ -->
       <section id="sec-schedule">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
           <h2 style="margin: 0; font-size: 18px;">📅 ふたりの予定</h2>
@@ -378,16 +407,19 @@ async function render() {
         </div>
         <div class="card">
           <h2>今後の予定</h2>
-          <p class="muted" style="margin-top:0;">「カレンダーに登録」を押すとスマホの標準カレンダーに保存され、OSからの通知を受け取れます。</p>
+          <p class="muted" style="margin-top:0;">カレンダーの共有機能を使えば、相手に通知がいきます！</p>
           ${schedules.slice().sort((a:any, b:any) => a.date.localeCompare(b.date)).map((s:any) => `
-            <div style="padding: 12px 0; border-bottom: 1px solid #f5e9ed; display:flex; justify-content:space-between; align-items:center;">
-              <div>
-                <b style="font-size: 16px; color:#e7617d;">${esc(s.title)}</b>
-                <div class="muted" style="font-weight:bold; margin-top:2px;">${s.date.replace(/-/g, '/')}</div>
+            <div style="padding: 14px 0; border-bottom: 1px solid #f5e9ed;">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                <div>
+                  <b style="font-size: 16px; color:#e7617d;">${esc(s.title)}</b>
+                  <div class="muted" style="font-weight:bold; margin-top:2px;">${s.date.replace(/-/g, '/')}</div>
+                </div>
+                <button class="del-sched ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:11px; border-radius:6px; background:transparent;">削除</button>
               </div>
-              <div style="text-align:right;">
-                <a href="${getIcsUrl(s.title, s.date)}" download="${s.title}.ics" class="ghost" style="display:inline-block; padding: 6px 12px; font-size: 11px; text-decoration: none; border-radius: 8px; font-weight:bold;">📅 カレンダーに登録</a>
-                <br><button class="del-sched ghost" data-id="${s.id}" style="color:#bf4f68; padding:4px 10px; font-size:11px; margin-top:6px; border-radius:6px; background:transparent;">削除</button>
+              <div style="display:flex; gap: 8px; margin-top: 10px;">
+                <a href="${getIcsUrl(s.title, s.date)}" download="${s.title}.ics" style="flex:1; text-align:center; background:#f0dfe4; color:#59464e; padding:8px 0; border-radius:8px; font-size:12px; font-weight:bold; text-decoration:none;">🍎 Appleに追加</a>
+                <a href="${getGoogleCalUrl(s.title, s.date)}" target="_blank" style="flex:1; text-align:center; background:#f0dfe4; color:#59464e; padding:8px 0; border-radius:8px; font-size:12px; font-weight:bold; text-decoration:none;">🇬 Googleに追加</a>
               </div>
             </div>
           `).join('') || '<p class="muted" style="text-align:center; padding:10px 0;">まだ予定はありません</p>'}
@@ -427,7 +459,7 @@ async function render() {
       <section id="sec-settings">
         <div class="card" style="margin-top: 20px;">
           <h2>招待コード</h2>
-          <div class="big" style="color: #e7617d;">${esc(p?.invite_code)}</div><p class="muted">${members.length}/2人</p>
+          <div class="big" style="color: #e7617d;">${esc(inviteCode)}</div><p class="muted">${members.length}/2人</p>
         </div>
         <div class="card">
           <h2>サブスク・定額の管理</h2>
@@ -473,7 +505,13 @@ async function render() {
   `;
 
   wire(stateObj);
-  setTab(currentTab); // 描画後に現在のタブを復元
+  setTab(currentTab); 
+  showCalc(); // 値を復元したときのために再計算
+  
+  // スマホですぐにフォーカスが当たるようにする
+  if (isInitial && currentTab === 'entry') {
+    setTimeout(() => q('#amount')?.focus(), 100);
+  }
 }
 
 function calc() {
@@ -495,23 +533,17 @@ function showCalc() {
 }
 
 function wire(state: any) {
-  // --- イベントバインド ---
-  
-  // スライドメニュー開閉
   q('#menuBtn')?.addEventListener('click', () => q('#menuDrawer').classList.remove('hide'));
   q('#closeDrawerBtn')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
   
-  // ドロワー内のナビゲーション
   document.querySelectorAll('[data-nav]').forEach((b: any) => {
     b.onclick = () => setTab(b.dataset.nav);
   });
 
-  // 下部タブの切り替え（再描画せずクラス切替のみ。爆速）
   document.querySelectorAll('[data-tab]').forEach((b: any) => {
     b.onclick = () => setTab(b.dataset.tab);
   });
 
-  // スケジュール追加・削除
   q('#addSchedBtn')?.addEventListener('click', () => {
     const title = val('#schedTitle').trim();
     const date = val('#schedDate');
@@ -562,6 +594,7 @@ function wire(state: any) {
     const utils = JSON.parse(localStorage.getItem(`utils_${pair}`) || '[]');
     utils.push({ id: Date.now().toString(), month, type, amount });
     localStorage.setItem(`utils_${pair}`, JSON.stringify(utils));
+    alert('登録しました');
     render();
   });
 
@@ -581,6 +614,7 @@ function wire(state: any) {
     const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
     subs.push({ id: Date.now().toString(), title, amount, date, payer_id: payer });
     localStorage.setItem(`subs_${pair}`, JSON.stringify(subs));
+    alert('サブスクを登録しました');
     render();
   });
 
@@ -635,6 +669,7 @@ function wire(state: any) {
   
   q('#out')?.addEventListener('click', logout);
   q('#amount')?.addEventListener('input', showCalc);
+  
   q('#saveTop')?.addEventListener('click', save);
   
   q('#settleBtn')?.addEventListener('click', () => {
@@ -680,7 +715,8 @@ async function settle(x: any) {
     pair_id: pair, from_user_id: x.sender, to_user_id: x.receiver, amount: Math.round(x.amount), created_by: uid, memo: 'アプリから精算'
   });
   if (error) return alert(error.message);
-  await load(); render();
+  await load();
+  render();
 }
 
 async function save() {
@@ -690,8 +726,13 @@ async function save() {
     input_pair_id: pair, input_title: val('#title').trim() || '支出', input_amount: amount, input_payer_id: val('#payer'), input_category: val('#cat') || 'その他', input_expense_date: getToday(), input_memo: null
   });
   if (error) return alert(error.message);
-  q('#amount').value = ''; q('#title').value = ''; showCalc(); // 入力をクリア
-  await load(); render(); 
+  await load();
+  
+  alert('追加しました！');
+  q('#amount').value = ''; 
+  q('#title').value = ''; 
+  showCalc();
+  render(); 
 }
 
 async function logout() { await supabase.auth.signOut(); boot(); }
