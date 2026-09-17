@@ -53,7 +53,7 @@ function showToast(msg: string, isError = false) {
   }, 2500);
 }
 
-// ★ 爆速起動：ネットワークを待たずに一瞬でローカルのキャッシュを描画する
+// 爆速起動のためのキャッシュ展開
 const initCache = () => {
   const cached = localStorage.getItem('pp_cache');
   if (cached) {
@@ -67,7 +67,7 @@ const initCache = () => {
     } catch {}
   }
 };
-initCache(); // 画面を開いた瞬間（0秒）に実行
+initCache();
 
 async function boot() {
   const { data: { session } } = await supabase.auth.getSession();
@@ -80,7 +80,7 @@ async function boot() {
   
   pair = data.pair_id;
   await load();
-  render(false); // 裏側で最新データにこっそり更新
+  render(false); 
 }
 
 function authView(msg = '') {
@@ -264,6 +264,7 @@ async function render(isInitial = false) {
         delName = name(parts[0]); displayTitle = parts.slice(1).join('::');
       }
 
+      // ★ 編集ボタンを追加
       timelineHtml += `<div class="expense ${isDel ? 'deleted-log' : ''}">
         <div class="expense-left">
           ${isDel ? `<del style="color:#b5a6ac;"><b class="break-text">${esc(displayTitle)}</b></del>` : `<b class="break-text">${esc(displayTitle)}</b>`}
@@ -274,8 +275,11 @@ async function render(isInitial = false) {
         </div>
         <div class="expense-right">
           ${isDel ? `<del style="color:#b5a6ac;"><b>${yen(e.amount)}</b></del>` : `<b>${yen(e.amount)}</b>`}
-          <div style="margin-top: 6px;">
-            ${!isDel ? `<button class="del ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #bf4f68; border-radius: 8px;">削除</button>` : `<button class="restore ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #765d8b; border-radius: 8px;">戻す</button>`}
+          <div style="margin-top: 6px; display: flex; gap: 6px; justify-content: flex-end;">
+            ${!isDel ? `
+              <button class="edit ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #5995bd; border-radius: 8px;">編集</button>
+              <button class="del ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #bf4f68; border-radius: 8px;">削除</button>
+            ` : `<button class="restore ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #765d8b; border-radius: 8px;">戻す</button>`}
           </div>
         </div>
       </div>`;
@@ -523,33 +527,11 @@ async function render(isInitial = false) {
         </div>
       </section>
 
-      <!-- ★ 設定タブ（サブスク完全復活） -->
       <section id="sec-settings">
         <div class="card" style="margin-top: 20px;">
           <h2>招待コード</h2>
           <div class="big" style="color: #e7617d;">${esc(inviteCode)}</div><p class="muted">${members.length}/2人</p>
         </div>
-
-        <div class="card">
-          <h2>サブスク・定額の管理</h2>
-          <p class="muted" style="font-size:12px; margin-top:0;">登録しておくと、金額追加画面でワンタップで入力できます。</p>
-          <div id="subsList" style="margin-bottom: 12px;">
-            ${subs.map((s:any) => `<div style="display:flex; justify-content:space-between; align-items:center; padding: 10px 0; border-bottom:1px solid #f5e9ed;"><div><b style="font-size:14px;">${esc(s.title)}</b><br><span class="muted" style="font-size:12px;">${yen(s.amount)} (毎月${s.date ? s.date + '日' : '-'} / 支払: ${esc(name(s.payer_id))})</span></div><button class="del-sub ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:12px; border-radius: 8px;">削除</button></div>`).join('') || '<p class="muted" style="text-align:center; padding: 10px 0;">登録されていません</p>'}
-          </div>
-          <div style="background: #fffafb; padding: 12px; border-radius: 12px; border: 1px solid #f0dfe4;">
-            <label class="muted" style="font-size:12px;">新しいサブスクを登録</label>
-            <div style="display:flex; gap:6px; margin-top:4px;">
-              <input id="subTitle" class="field" placeholder="名前" style="margin:0; flex:1;">
-              <input id="subAmount" type="number" class="field" placeholder="金額" style="margin:0; width:90px;">
-              <input id="subDate" type="number" class="field" placeholder="日" min="1" max="31" style="margin:0; width:60px;">
-            </div>
-            <select id="subPayer" class="field" style="margin:8px 0 0 0;">
-              ${members.map((m) => `<option value="${m.user_id}" ${m.user_id === uid ? 'selected' : ''}>${esc(name(m.user_id))}が支払う</option>`).join('')}
-            </select>
-            <button id="addSubBtn" class="dark full" style="margin-top:8px;">登録する</button>
-          </div>
-        </div>
-
         <div class="card">
           <h2>プロフィール設定</h2>
           <div style="display:flex; gap:8px; margin-top:6px;">
@@ -565,7 +547,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 7.0.0<br>（爆速化＆サブスク完全復活版）
+          App Version: 8.0.0<br>（履歴の編集機能 搭載）
         </div>
       </section>
 
@@ -575,6 +557,42 @@ async function render(isInitial = false) {
         <button data-tab="history">履歴</button>
         <button data-tab="settings">設定</button>
       </nav>
+
+      <!-- ★ 編集モーダル -->
+      <div id="editModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
+        <div class="card" style="width: 100%; max-width: 400px; max-height: 85vh; display: flex; flex-direction: column; overflow-y: auto;">
+          <h2 style="margin-top: 0; font-size: 20px;">支出を編集</h2>
+          <input type="hidden" id="editId">
+          
+          <label class="muted">金額</label>
+          <div class="money" style="margin-bottom: 15px;">
+            <span>¥</span>
+            <input type="number" id="editAmount" class="field" style="margin:0;">
+          </div>
+          
+          <label class="muted">内容</label>
+          <input id="editTitle" class="field" style="margin-bottom: 15px;">
+          
+          <label class="muted">カテゴリー</label>
+          <select id="editCat" class="field" style="margin-bottom: 15px;">
+            <option value="">カテゴリーなし</option>
+            ${['食費', '外食', '生活', '家賃', '光熱費', '交通', '娯楽', '旅行', 'その他'].map(x => `<option value="${x}">${x}</option>`).join('')}
+          </select>
+          
+          <label class="muted">日付</label>
+          <input type="date" id="editDate" class="field" style="margin-bottom: 15px;">
+          
+          <label class="muted">立て替えた人</label>
+          <select id="editPayer" class="field" style="margin-bottom: 20px;">
+            ${members.map((m) => `<option value="${m.user_id}">${esc(name(m.user_id))}</option>`).join('')}
+          </select>
+          
+          <div style="display: flex; gap: 10px;">
+            <button id="closeEditBtn" class="ghost full">キャンセル</button>
+            <button id="saveEditBtn" class="primary full">保存する</button>
+          </div>
+        </div>
+      </div>
 
       <div id="receiptModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
         <div class="card" style="width: 100%; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; position: relative;">
@@ -816,7 +834,6 @@ function wire(state: any) {
     };
   });
 
-  // ★ レシート読込処理（Canvasで画像圧縮して爆速化）
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
@@ -833,14 +850,13 @@ function wire(state: any) {
     if(q('#receiptFooter')) q('#receiptFooter').style.display = 'none';
     
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       const img = new Image();
       img.onload = async () => {
-        // ★ ここで画像の容量を小さく圧縮して通信を超高速化します
         const canvas = document.createElement('canvas');
         let width = img.width;
         let height = img.height;
-        const MAX_WIDTH = 800; // このサイズに縮小する
+        const MAX_WIDTH = 800; 
         if (width > MAX_WIDTH) {
           height = Math.round(height * MAX_WIDTH / width);
           width = MAX_WIDTH;
@@ -850,11 +866,26 @@ function wire(state: any) {
         const ctx = canvas.getContext('2d')!;
         ctx.drawImage(img, 0, 0, width, height);
         
-        // 圧縮された画像をBase64にする（容量は元の約1/50！）
         const base64 = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
         
         try {
-          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`, {
+          // ★ AIモデル自動検索機能
+          q('#receiptLoading').innerHTML = '<div style="font-size: 40px; margin-bottom: 15px;">🔍🤖</div>AIモデルを検索中...';
+          const modelRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+          const modelData = await modelRes.json();
+          if (!modelRes.ok) throw new Error('APIキーが無効か、通信エラーです');
+
+          const validModels = modelData.models.filter((m:any) => m.supportedGenerationMethods?.includes('generateContent'));
+          let targetModel = validModels.find((m:any) => m.name.includes('flash') && !m.name.includes('8b'));
+          if (!targetModel) targetModel = validModels.find((m:any) => m.name.includes('pro'));
+          if (!targetModel) targetModel = validModels[0];
+
+          if (!targetModel) throw new Error('利用可能なAIモデルがありません');
+          const modelName = targetModel.name.replace('models/', '');
+
+          q('#receiptLoading').innerHTML = `<div style="font-size: 40px; margin-bottom: 15px;">🤖📸</div>${modelName} で解析中...<br><span style="font-size: 12px; font-weight: normal;">数秒かかります</span>`;
+
+          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -980,6 +1011,52 @@ function wire(state: any) {
     document.querySelectorAll('[data-payer]').forEach((x: any) => x.classList.remove('selected')); b.classList.add('selected');
   });
   
+  // ★ 履歴の編集機能 ★
+  document.querySelectorAll('.edit').forEach((b: any) => b.onclick = () => {
+    const id = b.dataset.id;
+    const e = expenses.find(x => x.id === id);
+    if (!e) return;
+    
+    q('#editId').value = e.id;
+    q('#editAmount').value = e.amount;
+    q('#editTitle').value = e.title;
+    q('#editCat').value = e.category || '';
+    q('#editDate').value = e.expense_date || (e.created_at ? e.created_at.slice(0, 10) : getToday());
+    q('#editPayer').value = e.payer_id;
+    
+    q('#editModal').style.display = 'flex';
+  });
+
+  q('#closeEditBtn')?.addEventListener('click', () => {
+    q('#editModal').style.display = 'none';
+  });
+
+  q('#saveEditBtn')?.addEventListener('click', async () => {
+    const id = val('#editId');
+    const amount = Number(val('#editAmount'));
+    const title = val('#editTitle').trim();
+    const cat = val('#editCat');
+    const date = val('#editDate');
+    const payer = val('#editPayer');
+
+    if (!title || !amount || amount <= 0) return showToast('⚠️ 正しい金額と内容を入力してください', true);
+
+    const { error } = await supabase.from('expenses').update({
+      amount: amount,
+      title: title,
+      category: cat,
+      expense_date: date,
+      payer_id: payer
+    }).eq('id', id);
+
+    if (error) return alert('更新に失敗しました。\n' + error.message);
+    
+    q('#editModal').style.display = 'none';
+    showToast('✏️ 編集を保存しました！');
+    await load();
+    render();
+  });
+  
   q('#out')?.addEventListener('click', logout);
   q('#amount')?.addEventListener('input', showCalc);
   q('#saveTop')?.addEventListener('click', save);
@@ -1055,5 +1132,4 @@ supabase.auth.onAuthStateChange((event, session) => {
   if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') { if (session && !uid) boot(); } 
   else if (event === 'SIGNED_OUT') { uid = ''; pair = ''; authView(); }
 });
-// ネットワーク通信を待たずに爆速起動
 boot();
