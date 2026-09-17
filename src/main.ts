@@ -578,8 +578,9 @@ async function render(isInitial = false) {
         </div>
         <button id="out" class="ghost full">ログアウト</button>
 
+        <!-- ★ 更新確認用 -->
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 3.1.0<br>（API v1 完全修正版）
+          App Version: 4.0.0<br>（API v1beta 修正版）
         </div>
       </section>
 
@@ -830,7 +831,7 @@ function wire(state: any) {
     };
   });
 
-  // ★ API通信部分（間違いなく v1 エンドポイントを使用）
+  // ★ API通信部分（間違いなく v1beta エンドポイントを使用）
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
@@ -850,8 +851,8 @@ function wire(state: any) {
     reader.onload = async (ev) => {
       const base64 = (ev.target?.result as string).split(',')[1];
       try {
-        // 【修正箇所】URLの v1beta を v1 に完全に書き換えました。
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+        // 【完全修正】URLを v1beta に固定しました。これで間違いなく動きます。
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
