@@ -326,7 +326,6 @@ async function render() {
         ` : ''}
 
         <div class="card" style="margin-top: 0;">
-          <!-- ★レシート読込ボタン -->
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <label class="muted">相手への請求額</label>
             <button id="btnReceipt" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #ffe5e9; color: #a13c52; border-radius: 12px;">📷 レシート読込</button>
@@ -434,8 +433,8 @@ async function render() {
         <button data-tab="settings">設定</button>
       </nav>
 
-      <!-- ★レシート仕分けモーダル -->
-      <div id="receiptModal" class="hide" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; display: flex; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
+      <!-- ★レシート仕分けモーダル（修正：初期状態は確実に display: none） -->
+      <div id="receiptModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
         <div class="card" style="width: 100%; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; position: relative;">
           <h2 style="margin-top: 0; font-size: 20px;">レシート仕分け</h2>
           
@@ -542,8 +541,8 @@ function wire(state: any) {
       return alert('エラー：VITE_GEMINI_API_KEY が .env ファイルに設定されていません。\nGoogle AI Studioでキーを取得して設定してください。');
     }
 
-    // モーダルを開いてロード画面を表示
-    q('#receiptModal').classList.remove('hide');
+    // モーダルを開いてロード画面を表示（.hide を使わず style を直接変更）
+    q('#receiptModal').style.display = 'flex';
     q('#receiptLoading').style.display = 'block';
     if(q('#receiptItemsWrap')) q('#receiptItemsWrap').style.display = 'none';
     if(q('#receiptFooter')) q('#receiptFooter').style.display = 'none';
@@ -580,7 +579,7 @@ function wire(state: any) {
         
       } catch (err) {
         alert('レシートの読み取りに失敗しました。画像が不鮮明か、APIキーに問題がある可能性があります。');
-        q('#receiptModal').classList.add('hide');
+        q('#receiptModal').style.display = 'none';
       }
       
       // 同じ画像を連続で選べるようにリセット
@@ -590,7 +589,7 @@ function wire(state: any) {
   });
 
   q('#closeReceiptBtn')?.addEventListener('click', () => {
-    q('#receiptModal').classList.add('hide');
+    q('#receiptModal').style.display = 'none';
   });
 
   q('#applyReceiptBtn')?.addEventListener('click', () => {
@@ -605,7 +604,7 @@ function wire(state: any) {
     q('#title').value = 'スーパー (レシート自動計算)';
     showCalc();
     
-    q('#receiptModal').classList.add('hide');
+    q('#receiptModal').style.display = 'none';
   });
 
 
