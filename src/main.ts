@@ -7,6 +7,12 @@ let currentMonth = 'all';
 let utilViewMode: 'trend' | 'average' = 'trend'; 
 let currentTab = 'entry'; 
 
+// スケジュール用の状態
+let schedMode: 'multi' | 'span' = 'multi';
+let schedCalYear = new Date().getFullYear();
+let schedCalMonth = new Date().getMonth();
+let schedSelectedDates: string[] = [];
+
 // レシート読込用の状態管理
 let receiptState: { name: string, price: number, split: 'mine' | 'half' | 'partner' }[] = [];
 
@@ -294,15 +300,21 @@ async function render() {
   if (timeline.length === 0) timelineHtml = '<p class="muted" style="text-align: center; padding: 20px 0;">まだありません</p>';
 
   app.innerHTML = `
+    <style>
+      .sched-mode-btn { flex: 1; padding: 12px; border-radius: 12px; font-size: 13px; font-weight: bold; border: none; cursor: pointer; transition: 0.2s; white-space: nowrap;}
+      .sched-mode-btn.active { background: #ff8fa3; color: #fff; box-shadow: 0 4px 10px #ff8fa344; }
+      .sched-mode-btn.inactive { background: #fff0f3; color: #a76777; }
+    </style>
     <main class="app">
       <div class="top" style="margin-top: 10px; position: relative;">
         <div><div class="brand">♥ PairPocket</div><div class="muted" style="margin-left: 2px;">${esc(p?.name || 'ふたりの家計')}</div></div>
         <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 20px; position: absolute; right: 0; top: 0; border-radius: 12px;">☰</button>
       </div>
       
-      <!-- スライドメニュー -->
-      <div id="menuDrawer" class="hide" style="position: fixed; top: 0; right: 0; bottom: 0; left: 0; background: rgba(0,0,0,0.4); z-index: 9999; backdrop-filter: blur(2px);">
-        <div style="position: absolute; top: 0; right: 0; bottom: 0; width: 260px; background: #fffcfc; padding: 20px; box-shadow: -4px 0 15px rgba(0,0,0,0.1);">
+      <!-- ★修正：スライドメニュー（余白タップで閉じるための設定） -->
+      <div id="menuDrawer" class="hide" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 9999; backdrop-filter: blur(2px);">
+        <!-- この内側の白いエリア(#menuContent)はタップしても閉じないようにJSで制御します -->
+        <div id="menuContent" style="position: absolute; top: 0; right: 0; bottom: 0; width: 260px; background: #fffcfc; padding: 20px; box-shadow: -4px 0 15px rgba(0,0,0,0.1);">
           <button id="closeDrawerBtn" class="ghost" style="position: absolute; top: max(20px, env(safe-area-inset-top)); right: 20px; border-radius: 50%; width: 40px; height: 40px; padding: 0; display:flex; align-items:center; justify-content:center; font-size: 20px;">×</button>
           <div style="margin-top: calc(max(20px, env(safe-area-inset-top)) + 50px);">
             <div class="muted" style="margin-bottom: 10px; font-weight: bold;">便利機能</div>
@@ -405,6 +417,133 @@ async function render() {
         </div>
       </section>
 
+      <!-- ★復活！ スケジュールタブ -->
+      <section id="sec-schedule">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
+          <h2 style="margin: 0; font-size: 18px;">📅 ふたりの予定</h2>
+        </div>
+        
+        <div class="card" style="background: #fffafb; border: 1px solid #f0dfe4;">
+          <h2>新しい予定を登録</h2>
+          <input id="schedTitle" class="field" placeholder="予定 (例: ディズニー旅行)" style="margin-bottom: 15px;">
+          
+          <div style="display:flex; gap:8px; margin-bottom: 15px;">
+             <button id="btnModeMulti" class="sched-mode-btn active">📅 カレンダーで複数日</button>
+             <button id="btnModeSpan" class="sched-mode-btn inactive">期間・繰り返し</button>
+          </div>
+
+          <!-- 複数日カレンダーモード -->
+          <div id="wrapMulti">
+            <div style="display:flex; justify-content:space-between; align-items:center; background:#fff; padding:6px 12px; border-radius:12px; border:1px solid #f0dfe4;">
+               <button id="calPrev" class="ghost" style="padding:4px 12px; font-size:16px;">◀</button>
+               <span id="schedCalMonthLabel" style="font-weight:bold; color:#e7617d;"></span>
+               <button id="calNext" class="ghost" style="padding:4px 12px; font-size:16px;">▶</button>
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(7,1fr); text-align:center; font-size:11px; margin-top:10px; font-weight:bold;" class="muted">
+               <div style="color:#bf4f68;">日</div><div>月</div><div>火</div><div>水</div><div>木</div><div>金</div><div style="color:#7ab8e6;">土</div>
+            </div>
+            <div id="schedCalGrid" style="display:grid; grid-template-columns:repeat(7,1fr); gap:6px; margin-top:6px; padding-bottom:10px;"></div>
+          </div>
+
+          <!-- 期間・繰り返しモード -->
+          <div id="wrapSpan" class="hide">
+            <div style="display:flex; gap:8px; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">開始</span>
+              <input id="schedStartDate" type="date" class="field" style="margin:0; flex:1;" value="${getToday()}">
+            </div>
+            <div style="display:flex; gap:8px; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">終了</span>
+              <input id="schedEndDate" type="date" class="field" style="margin:0; flex:1;" value="${getToday()}">
+            </div>
+            <div style="display:flex; gap:8px; align-items: center; margin-bottom: 10px;">
+              <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">繰返</span>
+              <select id="schedRecurrence" class="field" style="margin:0; flex:1;">
+                <option value="none">繰り返さない</option>
+                <option value="daily">毎日</option>
+                <option value="weekly">毎週</option>
+                <option value="monthly">毎月</option>
+                <option value="yearly">毎年</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="border-top: 1px solid #f0dfe4; margin: 15px 0;"></div>
+          
+          <div style="display:flex; gap:8px; align-items: center; margin-bottom: 15px;">
+            <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">時間</span>
+            <input id="schedStartTime" type="time" class="field" style="margin:0; flex:1;">
+            <span style="color:#a76777; font-weight:bold;">〜</span>
+            <input id="schedEndTime" type="time" class="field" style="margin:0; flex:1;">
+          </div>
+
+          <button id="addSchedBtn" class="primary full" style="padding: 14px;">リストに追加</button>
+        </div>
+
+        <div class="card history-scroll">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h2 style="margin: 0;">今後の予定</h2>
+            <button id="exportAllSchedBtn" class="ghost" style="padding: 6px 12px; font-size: 12px; font-weight: bold; border-radius: 8px;">📥 すべて書き出す</button>
+          </div>
+          <p class="muted" style="margin-top:8px;">「すべて書き出す」で、スマホのカレンダーに一括で登録できます（重複しません）。</p>
+          ${schedules.slice().sort((a:any, b:any) => a.startDate.localeCompare(b.startDate)).map((s:any) => {
+            let displayTime = s.startDate.replace(/-/g, '/');
+            if (s.startTime) displayTime += ` ${s.startTime}`;
+            if (s.endDate && s.endDate !== s.startDate) {
+              displayTime += ` 〜 ${s.endDate.replace(/-/g, '/')}`;
+              if (s.endTime) displayTime += ` ${s.endTime}`;
+            } else if (s.endTime) {
+              displayTime += ` 〜 ${s.endTime}`;
+            }
+            
+            let recurText = '';
+            if (s.recurrence === 'daily') recurText = ' <span style="background:#fff0f3; color:#a76777; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:bold;">毎日</span>';
+            if (s.recurrence === 'weekly') recurText = ' <span style="background:#fff0f3; color:#a76777; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:bold;">毎週</span>';
+            if (s.recurrence === 'monthly') recurText = ' <span style="background:#fff0f3; color:#a76777; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:bold;">毎月</span>';
+            if (s.recurrence === 'yearly') recurText = ' <span style="background:#fff0f3; color:#a76777; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:bold;">毎年</span>';
+
+            return `
+            <div style="padding: 14px 0; border-bottom: 1px solid #f5e9ed;">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                <div>
+                  <b style="font-size: 16px; color:#e7617d;">${esc(s.title)}${recurText}</b>
+                  <div class="muted" style="font-weight:bold; margin-top:4px;">${displayTime}</div>
+                </div>
+                <button class="del-sched ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:11px; border-radius:6px; background:transparent;">削除</button>
+              </div>
+            </div>
+          `}).join('') || '<p class="muted" style="text-align:center; padding:10px 0;">まだ予定はありません</p>'}
+        </div>
+      </section>
+
+      <!-- ★復活！ 水道光熱費タブ -->
+      <section id="sec-utilities">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
+          <h2 style="margin: 0; font-size: 18px;">💧 水道・光熱費</h2>
+        </div>
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <div class="muted">推移・平均</div>
+            <button id="utilModeToggle" class="ghost" style="padding: 6px 12px; font-size: 12px; border-radius: 8px; font-weight: bold;">${utilViewMode === 'trend' ? '平均を見る ⇄' : 'グラフを見る ⇄'}</button>
+          </div>
+          ${graphHtml}
+        </div>
+        <div class="card">
+          <h2>記録を追加</h2>
+          <div style="display: flex; gap: 6px; margin-top: 10px;">
+            <input type="month" id="utilMonth" class="field" style="margin:0; flex:1;" value="${new Date().toISOString().slice(0,7)}">
+            <select id="utilType" class="field" style="margin:0; width: 110px;">
+              <option value="water">水道代</option><option value="energy">光熱費</option>
+            </select>
+          </div>
+          <input type="number" id="utilAmount" class="field" placeholder="金額を入力" style="margin-top: 10px;">
+          <button id="addUtilBtn" class="dark full">追加する</button>
+        </div>
+        <div class="card history-scroll">
+          <h2>履歴</h2>
+          ${utils.slice().reverse().map((u:any) => `<div style="display:flex; justify-content:space-between; align-items:center; padding: 12px 0; border-bottom:1px solid #f5e9ed;"><div><b style="font-size:15px; color:${u.type==='water'?'#5995bd':'#d88c5f'}">${u.type === 'water' ? '水道代' : '光熱費'}</b><div class="muted" style="font-size:12px; margin-top: 2px;">${u.month}</div></div><div style="text-align:right;"><b style="font-size: 16px;">${yen(u.amount)}</b><br><button class="del-util ghost" data-id="${u.id}" style="color:#bf4f68; padding:4px 10px; font-size:11px; margin-top:6px; border-radius:6px;">削除</button></div></div>`).join('') || '<p class="muted" style="text-align:center; padding:10px 0;">まだありません</p>'}
+        </div>
+      </section>
+
       <!-- 設定タブ -->
       <section id="sec-settings">
         <div class="card" style="margin-top: 20px;">
@@ -433,7 +572,7 @@ async function render() {
         <button data-tab="settings">設定</button>
       </nav>
 
-      <!-- ★レシート仕分けモーダル（修正：初期状態は確実に display: none） -->
+      <!-- レシート仕分けモーダル -->
       <div id="receiptModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
         <div class="card" style="width: 100%; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; position: relative;">
           <h2 style="margin-top: 0; font-size: 20px;">レシート仕分け</h2>
@@ -467,7 +606,57 @@ async function render() {
   setTab(currentTab); 
 }
 
-// レシートUIを再描画する関数
+function renderSchedCal() {
+  const container = q('#schedCalGrid');
+  if(!container) return;
+  const firstDay = new Date(schedCalYear, schedCalMonth, 1).getDay();
+  const lastDate = new Date(schedCalYear, schedCalMonth + 1, 0).getDate();
+
+  let html = '';
+  for(let i=0; i<firstDay; i++) html += `<div></div>`;
+  for(let d=1; d<=lastDate; d++) {
+    const dateStr = `${schedCalYear}-${String(schedCalMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const isSel = schedSelectedDates.includes(dateStr);
+    const bg = isSel ? '#ff8fa3' : '#fff';
+    const col = isSel ? '#fff' : '#3e3438';
+    const border = isSel ? '#ff8fa3' : '#f0dfe4';
+    const shadow = isSel ? '0 2px 6px rgba(255,143,163,0.4)' : 'none';
+    html += `<div class="cal-day" data-date="${dateStr}" style="background:${bg}; color:${col}; border:1px solid ${border}; box-shadow:${shadow}; padding:10px 0; text-align:center; border-radius:10px; cursor:pointer; font-weight:bold; transition:0.2s;">${d}</div>`;
+  }
+  container.innerHTML = html;
+
+  document.querySelectorAll('.cal-day').forEach((el: any) => {
+    el.onclick = () => {
+      const dt = el.dataset.date;
+      if (schedSelectedDates.includes(dt)) {
+        schedSelectedDates = schedSelectedDates.filter(x => x !== dt);
+      } else {
+        schedSelectedDates.push(dt);
+      }
+      renderSchedCal();
+    };
+  });
+  if(q('#schedCalMonthLabel')) q('#schedCalMonthLabel').textContent = `${schedCalYear}年 ${schedCalMonth+1}月`;
+}
+
+function renderSchedUI() {
+  if(q('#wrapMulti')) q('#wrapMulti').style.display = schedMode === 'multi' ? 'block' : 'none';
+  if(q('#wrapSpan')) q('#wrapSpan').style.display = schedMode === 'span' ? 'block' : 'none';
+  
+  const btnMulti = q('#btnModeMulti');
+  const btnSpan = q('#btnModeSpan');
+  if(btnMulti && btnSpan) {
+    if(schedMode === 'multi') {
+      btnMulti.className = 'sched-mode-btn active';
+      btnSpan.className = 'sched-mode-btn inactive';
+    } else {
+      btnMulti.className = 'sched-mode-btn inactive';
+      btnSpan.className = 'sched-mode-btn active';
+    }
+  }
+  if(schedMode === 'multi') renderSchedCal();
+}
+
 function renderReceiptItems() {
   q('#receiptLoading').style.display = 'none';
   q('#receiptItemsWrap').style.display = 'block';
@@ -504,7 +693,7 @@ function renderReceiptItems() {
   document.querySelectorAll('.split-btn').forEach((b: any) => {
     b.onclick = () => {
       receiptState[b.dataset.index].split = b.dataset.val;
-      renderReceiptItems(); // 再計算して描画
+      renderReceiptItems(); 
     };
   });
 }
@@ -528,20 +717,108 @@ function showCalc() {
 }
 
 function wire(state: any) {
-  // ★レシート読込機能のイベント
+  // ★ ドロワーメニュー関連（余白タップで閉じる機能追加）
+  q('#menuBtn')?.addEventListener('click', () => q('#menuDrawer').classList.remove('hide'));
+  q('#closeDrawerBtn')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
+  q('#menuDrawer')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide')); // 余白クリックで閉じる
+  q('#menuContent')?.addEventListener('click', (e: Event) => e.stopPropagation()); // 内側クリックは閉じない
+
+  // タブ遷移
+  document.querySelectorAll('[data-nav]').forEach((b: any) => {
+    b.onclick = () => { setTab(b.dataset.nav); if(b.dataset.nav === 'schedule') renderSchedUI(); };
+  });
+  document.querySelectorAll('[data-tab]').forEach((b: any) => {
+    b.onclick = () => { setTab(b.dataset.tab); if(b.dataset.tab === 'schedule') renderSchedUI(); };
+  });
+
+  // ★ 復活！スケジュール関連イベント
+  renderSchedUI();
+  q('#btnModeMulti')?.addEventListener('click', () => { schedMode = 'multi'; renderSchedUI(); });
+  q('#btnModeSpan')?.addEventListener('click', () => { schedMode = 'span'; renderSchedUI(); });
+  q('#calPrev')?.addEventListener('click', () => { schedCalMonth--; if(schedCalMonth<0){schedCalMonth=11;schedCalYear--;} renderSchedCal(); });
+  q('#calNext')?.addEventListener('click', () => { schedCalMonth++; if(schedCalMonth>11){schedCalMonth=0;schedCalYear++;} renderSchedCal(); });
+
+  q('#addSchedBtn')?.addEventListener('click', () => {
+    const title = val('#schedTitle').trim();
+    const startTime = val('#schedStartTime');
+    const endTime = val('#schedEndTime');
+    if (!title) return alert('予定を入力してください');
+
+    const sched = JSON.parse(localStorage.getItem(`sched_${pair}`) || '[]');
+
+    if (schedMode === 'multi') {
+      if (schedSelectedDates.length === 0) return alert('カレンダーから日付を選択してください');
+      schedSelectedDates.forEach(d => {
+        sched.push({ id: Date.now().toString() + Math.random(), title, startDate: d, endDate: d, startTime, endTime, recurrence: 'none' });
+      });
+      schedSelectedDates = []; 
+    } else {
+      const startDate = val('#schedStartDate');
+      let endDate = val('#schedEndDate') || startDate;
+      const recurrence = val('#schedRecurrence');
+      if (!startDate) return alert('開始日を入力してください');
+      if (endDate < startDate) endDate = startDate;
+      sched.push({ id: Date.now().toString(), title, startDate, endDate, startTime, endTime, recurrence });
+    }
+
+    localStorage.setItem(`sched_${pair}`, JSON.stringify(sched));
+    alert('リストに登録しました！');
+    render();
+  });
+
+  q('#exportAllSchedBtn')?.addEventListener('click', () => {
+    const scheds = JSON.parse(localStorage.getItem(`sched_${pair}`) || '[]');
+    if (scheds.length === 0) return alert('書き出す予定がありません');
+
+    let ics = 'BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//PairPocket//JP\n';
+    scheds.forEach((s: any) => {
+      const startD = s.startDate.replace(/-/g, '');
+      const endD = s.endDate.replace(/-/g, '');
+      let dtStart, dtEnd;
+
+      if (s.startTime || s.endTime) {
+        const st = s.startTime ? s.startTime.replace(':', '') + '00' : '000000';
+        const et = s.endTime ? s.endTime.replace(':', '') + '00' : '235900';
+        dtStart = `DTSTART;TZID=Asia/Tokyo:${startD}T${st}`;
+        dtEnd = `DTEND;TZID=Asia/Tokyo:${endD}T${et}`;
+      } else {
+        const d = new Date(s.endDate);
+        d.setDate(d.getDate() + 1);
+        const endDPlus1 = d.toISOString().slice(0,10).replace(/-/g, '');
+        dtStart = `DTSTART;VALUE=DATE:${startD}`;
+        dtEnd = `DTEND;VALUE=DATE:${endDPlus1}`;
+      }
+      let rrule = '';
+      if (s.recurrence && s.recurrence !== 'none') rrule = `\nRRULE:FREQ=${s.recurrence.toUpperCase()}`;
+      
+      ics += `BEGIN:VEVENT\nUID:${s.id}@pairpocket.app\n${dtStart}\n${dtEnd}\nSUMMARY:${s.title}${rrule}\nEND:VEVENT\n`;
+    });
+    ics += 'END:VCALENDAR';
+
+    const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'PairPocket_Schedules.ics';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  });
+
+  document.querySelectorAll('.del-sched').forEach((b: any) => {
+    b.onclick = () => {
+      if(!confirm('この予定を削除しますか？')) return;
+      let sched = JSON.parse(localStorage.getItem(`sched_${pair}`) || '[]');
+      sched = sched.filter((s: any) => s.id !== b.dataset.id);
+      localStorage.setItem(`sched_${pair}`, JSON.stringify(sched));
+      render();
+    };
+  });
+
+  // レシート読込
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
-  
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
     if (!file) return;
-    
-    // .envからAPIキーを取得
     const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-    if (!apiKey || apiKey === '') {
-      return alert('エラー：VITE_GEMINI_API_KEY が .env ファイルに設定されていません。\nGoogle AI Studioでキーを取得して設定してください。');
-    }
+    if (!apiKey || apiKey === '') return alert('エラー：VITE_GEMINI_API_KEY が .env ファイルに設定されていません。');
 
-    // モーダルを開いてロード画面を表示（.hide を使わず style を直接変更）
     q('#receiptModal').style.display = 'flex';
     q('#receiptLoading').style.display = 'block';
     if(q('#receiptItemsWrap')) q('#receiptItemsWrap').style.display = 'none';
@@ -555,82 +832,49 @@ function wire(state: any) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            contents: [{
-              parts: [
-                { text: "このレシート画像の品目と金額を読み取り、以下のJSON配列の形式で出力してください。小計、消費税、合計などの行は除外して、純粋な商品のみを抽出してください。JSON以外のテキスト（マークダウンなど）は一切含めないでください。\n[{\"name\": \"商品名\", \"price\": 100}]" },
-                { inline_data: { mime_type: file.type, data: base64 } }
-              ]
-            }]
+            contents: [{ parts: [
+                { text: "このレシート画像の品目と金額を読み取り、以下のJSON配列の形式で出力してください。小計、消費税、合計などの行は除外して、純粋な商品のみを抽出してください。JSON以外のテキストは一切含めないでください。\n[{\"name\": \"商品名\", \"price\": 100}]" },
+                { inlineData: { mimeType: file.type, data: base64 } }
+              ] }],
+            generationConfig: { responseMimeType: "application/json" }
           })
         });
         
         const data = await res.json();
+        if (!res.ok) throw new Error(data.error?.message || 'APIエラーが発生しました');
+
         let text = data.candidates[0].content.parts[0].text;
-        
-        // Geminiがマークダウンを含めて返してきた時の対策
         text = text.replace(/```json/gi, '').replace(/```/g, '').trim();
-        
         const items = JSON.parse(text);
         if (!Array.isArray(items)) throw new Error('Invalid JSON format');
         
-        // 全品目を最初は「折半(half)」として初期化
         receiptState = items.map((i:any) => ({...i, split: 'half'}));
         renderReceiptItems();
-        
-      } catch (err) {
-        alert('レシートの読み取りに失敗しました。画像が不鮮明か、APIキーに問題がある可能性があります。');
+      } catch (err: any) {
+        alert('レシートの読み取りに失敗しました。エラー詳細:\n' + err.message);
         q('#receiptModal').style.display = 'none';
       }
-      
-      // 同じ画像を連続で選べるようにリセット
       q('#receiptInput').value = '';
     };
     reader.readAsDataURL(file);
   });
 
-  q('#closeReceiptBtn')?.addEventListener('click', () => {
-    q('#receiptModal').style.display = 'none';
-  });
-
+  q('#closeReceiptBtn')?.addEventListener('click', () => { q('#receiptModal').style.display = 'none'; });
   q('#applyReceiptBtn')?.addEventListener('click', () => {
     let total = 0;
     receiptState.forEach(i => {
       if(i.split === 'half') total += i.price / 2;
       if(i.split === 'partner') total += i.price;
     });
-    
-    // 計算結果を入力欄とタイトルに反映
     q('#amount').value = Math.round(total).toString();
     q('#title').value = 'スーパー (レシート自動計算)';
     showCalc();
-    
     q('#receiptModal').style.display = 'none';
   });
 
-
-  q('#menuBtn')?.addEventListener('click', () => q('#menuDrawer').classList.remove('hide'));
-  q('#closeDrawerBtn')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
-  
-  document.querySelectorAll('[data-nav]').forEach((b: any) => {
-    b.onclick = () => { setTab(b.dataset.nav); };
-  });
-
-  document.querySelectorAll('[data-tab]').forEach((b: any) => {
-    b.onclick = () => { setTab(b.dataset.tab); };
-  });
-
-  q('#monthSelect')?.addEventListener('change', (e: any) => {
-    currentMonth = e.target.value;
-    render();
-  });
-
-  document.querySelectorAll('[data-op]').forEach((b: any) => {
-    b.onclick = (e: Event) => { e.preventDefault(); const input = q('#amount'); input.value += b.dataset.op; showCalc(); input.focus(); };
-  });
-
-  document.querySelectorAll('[data-plus]').forEach((b: any) => {
-    b.onclick = (e: Event) => { e.preventDefault(); const n = calc(); q('#amount').value = String((Number.isFinite(n) ? n : 0) + Number(b.dataset.plus)); showCalc(); q('#amount').focus(); };
-  });
+  q('#monthSelect')?.addEventListener('change', (e: any) => { currentMonth = e.target.value; render(); });
+  document.querySelectorAll('[data-op]').forEach((b: any) => { b.onclick = (e: Event) => { e.preventDefault(); const input = q('#amount'); input.value += b.dataset.op; showCalc(); input.focus(); }; });
+  document.querySelectorAll('[data-plus]').forEach((b: any) => { b.onclick = (e: Event) => { e.preventDefault(); const n = calc(); q('#amount').value = String((Number.isFinite(n) ? n : 0) + Number(b.dataset.plus)); showCalc(); q('#amount').focus(); }; });
 
   if (q('#clear')) q('#clear').onclick = (e: Event) => { e.preventDefault(); q('#amount').value = ''; showCalc(); q('#amount').focus(); };
   if (q('#split')) q('#split').onclick = (e: Event) => { e.preventDefault(); const n = calc(); if (Number.isFinite(n) && n > 0) { q('#amount').value = String(Math.round(n / 2)); showCalc(); q('#amount').focus(); } };
