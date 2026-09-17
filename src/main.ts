@@ -258,13 +258,24 @@ async function render(isInitial = false) {
     } else {
       const e = item.data;
       const isDel = typeof e.title === 'string' && e.title.startsWith('[削除済]');
+      
+      // ★ 編集履歴の表示処理
+      let editInfoHtml = '';
+      if (!isDel && e.updated_at && e.created_at && new Date(e.updated_at).getTime() - new Date(e.created_at).getTime() > 1000) {
+        // updated_at が存在し、かつ created_at より新しい場合は編集されたとみなす
+        // updated_by カラムがない場合は自分が編集したか不明なため、とりあえず名前を出さないか、最新の取得情報から推測するかになりますが、
+        // ここでは簡単に「編集済み」と日付だけ出す形にします。（誰が、を正確に出すにはDBにupdated_byカラムが必要です）
+        const updatedDate = new Date(e.updated_at);
+        const updStr = `${updatedDate.getFullYear()}/${String(updatedDate.getMonth() + 1).padStart(2, '0')}/${String(updatedDate.getDate()).padStart(2, '0')}`;
+        editInfoHtml = `<div style="font-size: 10px; color: #b5a6ac; margin-top: 2px;">✏️ 編集済 (${updStr})</div>`;
+      }
+
       let displayTitle = e.title; let delName = '';
       if (isDel) {
         const parts = e.title.replace('[削除済] ', '').split('::');
         delName = name(parts[0]); displayTitle = parts.slice(1).join('::');
       }
 
-      // ★ 編集ボタンを追加
       timelineHtml += `<div class="expense ${isDel ? 'deleted-log' : ''}">
         <div class="expense-left">
           ${isDel ? `<del style="color:#b5a6ac;"><b class="break-text">${esc(displayTitle)}</b></del>` : `<b class="break-text">${esc(displayTitle)}</b>`}
@@ -272,6 +283,7 @@ async function render(isInitial = false) {
             ${isDel ? `<span class="deleted-badge">削除者: ${esc(delName)}</span>` : ''}
             ${esc(name(e.payer_id))}・${tStr}
           </div>
+          ${editInfoHtml}
         </div>
         <div class="expense-right">
           ${isDel ? `<del style="color:#b5a6ac;"><b>${yen(e.amount)}</b></del>` : `<b>${yen(e.amount)}</b>`}
@@ -527,11 +539,33 @@ async function render(isInitial = false) {
         </div>
       </section>
 
+      <!-- 設定タブ -->
       <section id="sec-settings">
         <div class="card" style="margin-top: 20px;">
           <h2>招待コード</h2>
           <div class="big" style="color: #e7617d;">${esc(inviteCode)}</div><p class="muted">${members.length}/2人</p>
         </div>
+
+        <div class="card">
+          <h2>サブスク・定額の管理</h2>
+          <p class="muted" style="font-size:12px; margin-top:0;">登録しておくと、金額追加画面でワンタップで入力できます。</p>
+          <div id="subsList" style="margin-bottom: 12px;">
+            ${subs.map((s:any) => `<div style="display:flex; justify-content:space-between; align-items:center; padding: 10px 0; border-bottom:1px solid #f5e9ed;"><div><b style="font-size:14px;">${esc(s.title)}</b><br><span class="muted" style="font-size:12px;">${yen(s.amount)} (毎月${s.date ? s.date + '日' : '-'} / 支払: ${esc(name(s.payer_id))})</span></div><button class="del-sub ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:12px; border-radius: 8px;">削除</button></div>`).join('') || '<p class="muted" style="text-align:center; padding: 10px 0;">登録されていません</p>'}
+          </div>
+          <div style="background: #fffafb; padding: 12px; border-radius: 12px; border: 1px solid #f0dfe4;">
+            <label class="muted" style="font-size:12px;">新しいサブスクを登録</label>
+            <div style="display:flex; gap:6px; margin-top:4px;">
+              <input id="subTitle" class="field" placeholder="名前" style="margin:0; flex:1;">
+              <input id="subAmount" type="number" class="field" placeholder="金額" style="margin:0; width:90px;">
+              <input id="subDate" type="number" class="field" placeholder="日" min="1" max="31" style="margin:0; width:60px;">
+            </div>
+            <select id="subPayer" class="field" style="margin:8px 0 0 0;">
+              ${members.map((m) => `<option value="${m.user_id}" ${m.user_id === uid ? 'selected' : ''}>${esc(name(m.user_id))}が支払う</option>`).join('')}
+            </select>
+            <button id="addSubBtn" class="dark full" style="margin-top:8px;">登録する</button>
+          </div>
+        </div>
+
         <div class="card">
           <h2>プロフィール設定</h2>
           <div style="display:flex; gap:8px; margin-top:6px;">
@@ -547,7 +581,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 8.0.0<br>（履歴の編集機能 搭載）
+          App Version: 9.0.0<br>（編集履歴 表示対応）
         </div>
       </section>
 
@@ -850,7 +884,7 @@ function wire(state: any) {
     if(q('#receiptFooter')) q('#receiptFooter').style.display = 'none';
     
     const reader = new FileReader();
-    reader.onload = async (ev) => {
+    reader.onload = (ev) => {
       const img = new Image();
       img.onload = async () => {
         const canvas = document.createElement('canvas');
@@ -869,7 +903,6 @@ function wire(state: any) {
         const base64 = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
         
         try {
-          // ★ AIモデル自動検索機能
           q('#receiptLoading').innerHTML = '<div style="font-size: 40px; margin-bottom: 15px;">🔍🤖</div>AIモデルを検索中...';
           const modelRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
           const modelData = await modelRes.json();
@@ -1010,8 +1043,8 @@ function wire(state: any) {
     q('#payer').value = b.dataset.payer;
     document.querySelectorAll('[data-payer]').forEach((x: any) => x.classList.remove('selected')); b.classList.add('selected');
   });
-  
-  // ★ 履歴の編集機能 ★
+
+  // ★ 履歴の編集・削除
   document.querySelectorAll('.edit').forEach((b: any) => b.onclick = () => {
     const id = b.dataset.id;
     const e = expenses.find(x => x.id === id);
@@ -1046,7 +1079,8 @@ function wire(state: any) {
       title: title,
       category: cat,
       expense_date: date,
-      payer_id: payer
+      payer_id: payer,
+      updated_at: new Date().toISOString() // ★ 更新日時を記録
     }).eq('id', id);
 
     if (error) return alert('更新に失敗しました。\n' + error.message);
@@ -1132,4 +1166,3 @@ supabase.auth.onAuthStateChange((event, session) => {
   if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') { if (session && !uid) boot(); } 
   else if (event === 'SIGNED_OUT') { uid = ''; pair = ''; authView(); }
 });
-boot();
