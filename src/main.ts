@@ -82,7 +82,7 @@ async function boot() {
   if (!session) return authView();
   uid = session.user.id;
 
-  // ★ 爆速表示のためのキャッシュ読み込み
+  // 爆速表示のためのキャッシュ読み込み
   const cached = localStorage.getItem('pp_cache');
   if (cached) {
     try {
@@ -90,7 +90,7 @@ async function boot() {
       if (x.uid === uid) {
         pair = x.pair; members = x.members || []; expenses = x.expenses || [];
         settlements = x.settlements || []; balances = x.balances || [];
-        render(true); // 通信を待たずに一瞬で画面を描画
+        render(true); 
       }
     } catch {}
   }
@@ -101,7 +101,7 @@ async function boot() {
   if (!data) return pairView();
   pair = data.pair_id;
   await load();
-  render(false); // 最新データにこっそり更新
+  render(false); 
 }
 
 function authView(msg = '') {
@@ -144,7 +144,6 @@ async function load() {
   balances = b.data || [];
   settlements = s.data || [];
 
-  // 次回の爆速起動のために最新データを保存
   localStorage.setItem('pp_cache', JSON.stringify({ uid, pair, members, expenses, balances, settlements }));
 }
 
@@ -338,7 +337,6 @@ async function render(isInitial = false) {
         <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 20px; position: absolute; right: 0; top: 0; border-radius: 12px;">☰</button>
       </div>
       
-      <!-- スライドメニュー（外側タップで閉じる） -->
       <div id="menuDrawer" class="hide" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 9999; backdrop-filter: blur(2px);">
         <div id="menuContent" style="position: absolute; top: 0; right: 0; bottom: 0; width: 260px; background: #fffcfc; padding: 20px; box-shadow: -4px 0 15px rgba(0,0,0,0.1);">
           <button id="closeDrawerBtn" class="ghost" style="position: absolute; top: max(20px, env(safe-area-inset-top)); right: 20px; border-radius: 50%; width: 40px; height: 40px; padding: 0; display:flex; align-items:center; justify-content:center; font-size: 20px;">×</button>
@@ -350,7 +348,6 @@ async function render(isInitial = false) {
         </div>
       </div>
 
-      <!-- 入力タブ -->
       <section id="sec-entry">
         <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 15px; margin-bottom: 15px; padding: 0 4px;">
           <h2 style="margin: 0; font-size: 20px; color: #3e3438;">新しく追加</h2>
@@ -407,7 +404,6 @@ async function render(isInitial = false) {
         </div>
       </section>
 
-      <!-- 精算タブ -->
       <section id="sec-home">
         <div class="card hero" style="padding: 24px; text-align: center; margin-top: 20px;">
           <div class="muted" style="margin-bottom: 12px;">現在の精算</div>
@@ -426,7 +422,6 @@ async function render(isInitial = false) {
         </div>
       </section>
 
-      <!-- 履歴タブ -->
       <section id="sec-history">
         <div class="card" style="padding: 10px 18px; margin-top: 20px;">
           <select id="monthSelect" class="field" style="margin:0; font-weight:bold;">
@@ -444,7 +439,6 @@ async function render(isInitial = false) {
         </div>
       </section>
 
-      <!-- スケジュールタブ -->
       <section id="sec-schedule">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
           <h2 style="margin: 0; font-size: 18px;">📅 ふたりの予定</h2>
@@ -540,7 +534,6 @@ async function render(isInitial = false) {
         </div>
       </section>
 
-      <!-- 水道光熱費タブ -->
       <section id="sec-utilities">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
           <button id="closeUtils" class="ghost" style="padding: 10px 14px; visibility: hidden;">戻る</button>
@@ -571,11 +564,9 @@ async function render(isInitial = false) {
         </div>
       </section>
 
-      <!-- 設定タブ -->
       <section id="sec-settings">
         <div class="card" style="margin-top: 20px;">
           <h2>招待コード</h2>
-          <!-- ★ エラーの原因を修正！正しくは inviteCode -->
           <div class="big" style="color: #e7617d;">${esc(inviteCode)}</div><p class="muted">${members.length}/2人</p>
         </div>
         <div class="card">
@@ -600,7 +591,6 @@ async function render(isInitial = false) {
         <button data-tab="settings">設定</button>
       </nav>
 
-      <!-- レシート仕分けモーダル -->
       <div id="receiptModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
         <div class="card" style="width: 100%; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; position: relative;">
           <h2 style="margin-top: 0; font-size: 20px;">レシート仕分け</h2>
@@ -841,6 +831,7 @@ function wire(state: any) {
     };
   });
 
+  // ★ レシート読込処理（正しいモデル名に戻し、画像形式の指定も完璧にしました）
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
@@ -857,13 +848,13 @@ function wire(state: any) {
     reader.onload = async (ev) => {
       const base64 = (ev.target?.result as string).split(',')[1];
       try {
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`, {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             contents: [{ parts: [
                 { text: "このレシート画像の品目と金額を読み取り、以下のJSON配列の形式で出力してください。小計、消費税、合計などの行は除外して、純粋な商品のみを抽出してください。JSON以外のテキストは一切含めないでください。\n[{\"name\": \"商品名\", \"price\": 100}]" },
-                { inlineData: { mimeType: file.type, data: base64 } }
+                { inlineData: { mimeType: file.type || 'image/jpeg', data: base64 } }
               ] }],
             generationConfig: { responseMimeType: "application/json" }
           })
