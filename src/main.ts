@@ -81,12 +81,27 @@ async function boot() {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return authView();
   uid = session.user.id;
+
+  // ★ 爆速表示のためのキャッシュ読み込み ★
+  const cached = localStorage.getItem('pp_cache');
+  if (cached) {
+    try {
+      const x = JSON.parse(cached);
+      if (x.uid === uid) {
+        pair = x.pair; members = x.members || []; expenses = x.expenses || [];
+        settlements = x.settlements || []; balances = x.balances || [];
+        render(true); // 通信を待たずに一瞬で画面を描画
+      }
+    } catch {}
+  }
+
+  // 裏側で最新データをサーバーから取得
   const { data, error } = await supabase.from('pair_members').select('pair_id').eq('user_id', uid).maybeSingle();
   if (error) return fail(error.message);
   if (!data) return pairView();
   pair = data.pair_id;
   await load();
-  render(); 
+  render(false); // 最新データにこっそり更新
 }
 
 function authView(msg = '') {
@@ -128,6 +143,9 @@ async function load() {
   expenses = e.data || [];
   balances = b.data || [];
   settlements = s.data || [];
+
+  // ★ 次回の爆速起動のために最新データを保存 ★
+  localStorage.setItem('pp_cache', JSON.stringify({ uid, pair, members, expenses, balances, settlements }));
 }
 
 function setTab(tab: string) {
@@ -147,8 +165,19 @@ function setTab(tab: string) {
   });
 }
 
-async function render() {
-  const { data: p } = await supabase.from('pairs').select('name,invite_code').eq('id', pair).single();
+async function render(isInitial = false) {
+  // すでに入力中のテキストがあれば保持
+  const currentAmt = val('#amount');
+  const currentTitle = val('#title');
+
+  let pairName = 'ふたりの家計';
+  let inviteCode = '';
+  // ネットワーク通信を待たずに描画するため、キャッシュがない時は名前を省略
+  if (!isInitial) {
+    const { data: p } = await supabase.from('pairs').select('name,invite_code').eq('id', pair).single();
+    if (p) { pairName = p.name; inviteCode = p.invite_code; }
+  }
+
   const name = (id: string) => members.find(x => x.user_id === id)?.profiles?.display_name || balances.find(x => x.user_id === id)?.display_name || 'メンバー';
   
   let bals: Record<string, number> = {};
@@ -307,13 +336,12 @@ async function render() {
     </style>
     <main class="app">
       <div class="top" style="margin-top: 10px; position: relative;">
-        <div><div class="brand">♥ PairPocket</div><div class="muted" style="margin-left: 2px;">${esc(p?.name || 'ふたりの家計')}</div></div>
+        <div><div class="brand">♥ PairPocket</div><div class="muted" style="margin-left: 2px;">${esc(pairName)}</div></div>
         <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 20px; position: absolute; right: 0; top: 0; border-radius: 12px;">☰</button>
       </div>
       
-      <!-- ★修正：スライドメニュー（余白タップで閉じるための設定） -->
+      <!-- スライドメニュー（外側タップで閉じる） -->
       <div id="menuDrawer" class="hide" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 9999; backdrop-filter: blur(2px);">
-        <!-- この内側の白いエリア(#menuContent)はタップしても閉じないようにJSで制御します -->
         <div id="menuContent" style="position: absolute; top: 0; right: 0; bottom: 0; width: 260px; background: #fffcfc; padding: 20px; box-shadow: -4px 0 15px rgba(0,0,0,0.1);">
           <button id="closeDrawerBtn" class="ghost" style="position: absolute; top: max(20px, env(safe-area-inset-top)); right: 20px; border-radius: 50%; width: 40px; height: 40px; padding: 0; display:flex; align-items:center; justify-content:center; font-size: 20px;">×</button>
           <div style="margin-top: calc(max(20px, env(safe-area-inset-top)) + 50px);">
@@ -331,12 +359,6 @@ async function render() {
           <button id="saveTop" class="primary" style="padding: 12px 24px; font-size: 16px; border-radius: 20px; box-shadow: 0 4px 12px rgba(255, 130, 156, 0.4);">追加する</button>
         </div>
 
-        ${subs.length > 0 ? `
-          <div style="overflow-x: auto; white-space: nowrap; padding-bottom: 8px; margin-bottom: 15px;">
-            ${subs.map((s:any) => `<div class="sub-fill-btn sub-chip" data-id="${s.id}">${esc(s.title)}</div>`).join('')}
-          </div>
-        ` : ''}
-
         <div class="card" style="margin-top: 0;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <label class="muted">相手への請求額</label>
@@ -346,7 +368,7 @@ async function render() {
 
           <div class="money">
             <span>¥</span>
-            <input type="text" id="amount" inputmode="numeric" placeholder="1200+350">
+            <input type="text" id="amount" inputmode="numeric" placeholder="1200+350" value="${currentAmt}">
           </div>
           
           <div class="calc-buttons">
@@ -369,8 +391,16 @@ async function render() {
           
           <div style="border-top: 1px solid #f0dfe4; margin: 20px 0 15px;"></div>
 
+          <!-- ★サブスクボタンを内容（任意）の上に移動 -->
+          ${subs.length > 0 ? `
+            <label class="muted" style="display:block; margin-bottom:6px;">定額・サブスクから入力</label>
+            <div style="overflow-x: auto; white-space: nowrap; padding-bottom: 8px; margin-bottom: 15px;">
+              ${subs.map((s:any) => `<div class="sub-fill-btn sub-chip" data-id="${s.id}" style="font-size:12px; padding:6px 12px;">${esc(s.title)}</div>`).join('')}
+            </div>
+          ` : ''}
+
           <label class="muted">内容（任意）</label>
-          <input id="title" class="field" placeholder="例：カフェ、スーパー">
+          <input id="title" class="field" placeholder="例：カフェ、スーパー" value="${currentTitle}">
           
           <label class="muted">カテゴリー</label>
           <select id="cat" class="field">
@@ -417,7 +447,7 @@ async function render() {
         </div>
       </section>
 
-      <!-- ★復活！ スケジュールタブ -->
+      <!-- スケジュールタブ -->
       <section id="sec-schedule">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
           <h2 style="margin: 0; font-size: 18px;">📅 ふたりの予定</h2>
@@ -515,10 +545,12 @@ async function render() {
         </div>
       </section>
 
-      <!-- ★復活！ 水道光熱費タブ -->
+      <!-- 水道光熱費タブ -->
       <section id="sec-utilities">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
+          <button id="closeUtils" class="ghost" style="padding: 10px 14px; visibility: hidden;">戻る</button>
           <h2 style="margin: 0; font-size: 18px;">💧 水道・光熱費</h2>
+          <div style="width: 60px;"></div>
         </div>
         <div class="card">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
@@ -549,6 +581,25 @@ async function render() {
         <div class="card" style="margin-top: 20px;">
           <h2>招待コード</h2>
           <div class="big" style="color: #e7617d;">${esc(p?.invite_code)}</div><p class="muted">${members.length}/2人</p>
+        </div>
+        <div class="card">
+          <h2>サブスク・定額の管理</h2>
+          <p class="muted" style="font-size:12px; margin-top:0;">登録しておくと、金額追加画面でワンタップで入力できます。</p>
+          <div id="subsList" style="margin-bottom: 12px;">
+            ${subs.map((s:any) => `<div style="display:flex; justify-content:space-between; align-items:center; padding: 10px 0; border-bottom:1px solid #f5e9ed;"><div><b style="font-size:14px;">${esc(s.title)}</b><br><span class="muted" style="font-size:12px;">${yen(s.amount)} (毎月${s.date ? s.date + '日' : '-'} / 支払: ${esc(name(s.payer_id))})</span></div><button class="del-sub ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:12px; border-radius: 8px;">削除</button></div>`).join('') || '<p class="muted" style="text-align:center; padding: 10px 0;">登録されていません</p>'}
+          </div>
+          <div style="background: #fffafb; padding: 12px; border-radius: 12px; border: 1px solid #f0dfe4;">
+            <label class="muted" style="font-size:12px;">新しいサブスクを登録</label>
+            <div style="display:flex; gap:6px; margin-top:4px;">
+              <input id="subTitle" class="field" placeholder="名前" style="margin:0; flex:1;">
+              <input id="subAmount" type="number" class="field" placeholder="金額" style="margin:0; width:90px;">
+              <input id="subDate" type="number" class="field" placeholder="日" min="1" max="31" style="margin:0; width:60px;">
+            </div>
+            <select id="subPayer" class="field" style="margin:8px 0 0 0;">
+              ${members.map((m) => `<option value="${m.user_id}" ${m.user_id === uid ? 'selected' : ''}>${esc(name(m.user_id))}が支払う</option>`).join('')}
+            </select>
+            <button id="addSubBtn" class="dark full" style="margin-top:8px;">登録する</button>
+          </div>
         </div>
         <div class="card">
           <h2>プロフィール設定</h2>
@@ -604,6 +655,12 @@ async function render() {
 
   wire(stateObj);
   setTab(currentTab); 
+  showCalc();
+
+  // スマホで爆速起動時にすぐキーボードが開くようにする（入力タブの場合のみ）
+  if (isInitial && currentTab === 'entry') {
+    setTimeout(() => q('#amount')?.focus(), 100);
+  }
 }
 
 function renderSchedCal() {
@@ -717,11 +774,11 @@ function showCalc() {
 }
 
 function wire(state: any) {
-  // ★ ドロワーメニュー関連（余白タップで閉じる機能追加）
+  // ★ 余白タップでメニューを閉じる
   q('#menuBtn')?.addEventListener('click', () => q('#menuDrawer').classList.remove('hide'));
   q('#closeDrawerBtn')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
-  q('#menuDrawer')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide')); // 余白クリックで閉じる
-  q('#menuContent')?.addEventListener('click', (e: Event) => e.stopPropagation()); // 内側クリックは閉じない
+  q('#menuDrawer')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
+  q('#menuContent')?.addEventListener('click', (e: Event) => e.stopPropagation());
 
   // タブ遷移
   document.querySelectorAll('[data-nav]').forEach((b: any) => {
@@ -731,7 +788,7 @@ function wire(state: any) {
     b.onclick = () => { setTab(b.dataset.tab); if(b.dataset.tab === 'schedule') renderSchedUI(); };
   });
 
-  // ★ 復活！スケジュール関連イベント
+  // ★ スケジュール関連
   renderSchedUI();
   q('#btnModeMulti')?.addEventListener('click', () => { schedMode = 'multi'; renderSchedUI(); });
   q('#btnModeSpan')?.addEventListener('click', () => { schedMode = 'span'; renderSchedUI(); });
@@ -811,7 +868,7 @@ function wire(state: any) {
     };
   });
 
-  // レシート読込
+  // ★ レシート読込
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
