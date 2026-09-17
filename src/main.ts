@@ -7,13 +7,11 @@ let currentMonth = 'all';
 let utilViewMode: 'trend' | 'average' = 'trend'; 
 let currentTab = 'entry'; 
 
-// スケジュール用の状態
+// スケジュール・レシート用の状態
 let schedMode: 'multi' | 'span' = 'multi';
 let schedCalYear = new Date().getFullYear();
 let schedCalMonth = new Date().getMonth();
 let schedSelectedDates: string[] = [];
-
-// レシート読込用の状態管理
 let receiptState: { name: string, price: number, split: 'mine' | 'half' | 'partner' }[] = [];
 
 const getToday = () => {
@@ -32,19 +30,21 @@ const fmtTime = (raw: string) => {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
-// ★ 緑色のふわっと出る通知（トースト）を表示する関数
-function showToast(msg: string) {
+// ★ 緑のふわっと出る通知（トースト）
+function showToast(msg: string, isError = false) {
   let t = q('#toastMsg');
   if (!t) {
     t = document.createElement('div');
     t.id = 'toastMsg';
-    t.style.cssText = 'position:fixed; bottom:70px; left:50%; transform:translateX(-50%); background:#4caf50; color:#fff; padding:12px 24px; border-radius:30px; font-weight:bold; box-shadow:0 4px 12px rgba(76,175,80,0.3); z-index:99999; opacity:0; transition:all 0.3s; pointer-events:none; font-size:14px; white-space:nowrap;';
+    t.style.cssText = `position:fixed; bottom:70px; left:50%; transform:translateX(-50%); color:#fff; padding:12px 24px; border-radius:30px; font-weight:bold; z-index:999999; opacity:0; transition:all 0.3s; pointer-events:none; font-size:14px; white-space:nowrap;`;
     document.body.appendChild(t);
   }
+  t.style.background = isError ? '#bf4f68' : '#4caf50';
+  t.style.boxShadow = isError ? '0 4px 12px rgba(191,79,104,0.3)' : '0 4px 12px rgba(76,175,80,0.3)';
   t.textContent = msg;
   t.style.bottom = '70px';
   t.style.opacity = '0';
-  void t.offsetWidth; // 描画リセット
+  void t.offsetWidth; 
   t.style.bottom = '90px';
   t.style.opacity = '1';
   setTimeout(() => {
@@ -57,20 +57,17 @@ const getIcsUrl = (s: any) => {
   const startD = s.startDate.replace(/-/g, '');
   const endD = s.endDate.replace(/-/g, '');
   let dtStart, dtEnd;
-
   if (s.startTime || s.endTime) {
     const st = s.startTime ? s.startTime.replace(':', '') + '00' : '000000';
     const et = s.endTime ? s.endTime.replace(':', '') + '00' : '235900';
     dtStart = `DTSTART;TZID=Asia/Tokyo:${startD}T${st}`;
     dtEnd = `DTEND;TZID=Asia/Tokyo:${endD}T${et}`;
   } else {
-    const d = new Date(s.endDate);
-    d.setDate(d.getDate() + 1);
+    const d = new Date(s.endDate); d.setDate(d.getDate() + 1);
     const endDPlus1 = d.toISOString().slice(0,10).replace(/-/g, '');
     dtStart = `DTSTART;VALUE=DATE:${startD}`;
     dtEnd = `DTEND;VALUE=DATE:${endDPlus1}`;
   }
-
   let rrule = '';
   if (s.recurrence && s.recurrence !== 'none') rrule = `\nRRULE:FREQ=${s.recurrence.toUpperCase()}`;
   const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//PairPocket//JP\nBEGIN:VEVENT\nUID:${s.id}@pairpocket.app\n${dtStart}\n${dtEnd}\nSUMMARY:${s.title}${rrule}\nEND:VEVENT\nEND:VCALENDAR`;
@@ -81,43 +78,43 @@ const getGoogleCalUrl = (s: any) => {
   const startD = s.startDate.replace(/-/g, '');
   const endD = s.endDate.replace(/-/g, '');
   let dates = '';
-
   if (s.startTime || s.endTime) {
     const st = s.startTime ? s.startTime.replace(':', '') + '00' : '000000';
     const et = s.endTime ? s.endTime.replace(':', '') + '00' : '235900';
     dates = `${startD}T${st}/${endD}T${et}`;
   } else {
-    const d = new Date(s.endDate);
-    d.setDate(d.getDate() + 1);
+    const d = new Date(s.endDate); d.setDate(d.getDate() + 1);
     const endDPlus1 = d.toISOString().slice(0,10).replace(/-/g, '');
     dates = `${startD}/${endDPlus1}`;
   }
-
   let recur = '';
   if (s.recurrence && s.recurrence !== 'none') recur = `&recur=RRULE:FREQ=${s.recurrence.toUpperCase()}`;
   return `https://www.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(s.title)}&dates=${dates}&ctz=Asia/Tokyo${recur}`;
 };
 
+// ★ 完全な爆速起動（ネットワーク通信を一切待たずに即描画）
 async function boot() {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) return authView();
-  uid = session.user.id;
-
   const cached = localStorage.getItem('pp_cache');
   if (cached) {
     try {
       const x = JSON.parse(cached);
-      if (x.uid === uid) {
-        pair = x.pair; members = x.members || []; expenses = x.expenses || [];
-        settlements = x.settlements || []; balances = x.balances || [];
+      if (x.uid) {
+        uid = x.uid; pair = x.pair; members = x.members || []; 
+        expenses = x.expenses || []; settlements = x.settlements || []; balances = x.balances || [];
         render(true); 
       }
     } catch {}
   }
 
+  // 裏側で通信
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) return authView();
+  uid = session.user.id;
+
   const { data, error } = await supabase.from('pair_members').select('pair_id').eq('user_id', uid).maybeSingle();
   if (error) return fail(error.message);
   if (!data) return pairView();
+  
   pair = data.pair_id;
   await load();
   render(false); 
@@ -158,10 +155,7 @@ async function load() {
   ]);
   const er = m.error || e.error || b.error || s.error;
   if (er) return fail(er.message);
-  members = m.data || [];
-  expenses = e.data || [];
-  balances = b.data || [];
-  settlements = s.data || [];
+  members = m.data || []; expenses = e.data || []; balances = b.data || []; settlements = s.data || [];
 
   localStorage.setItem('pp_cache', JSON.stringify({ uid, pair, members, expenses, balances, settlements }));
 }
@@ -172,9 +166,7 @@ function setTab(tab: string) {
     const el = q('#sec-' + x);
     if (el) el.style.display = (x === tab) ? 'block' : 'none';
   });
-  
   q('#menuDrawer')?.classList.add('hide');
-
   document.querySelectorAll('.tabs button').forEach((b: any) => {
     if (['entry', 'home', 'history', 'settings'].includes(b.dataset.tab)) {
       b.style.fontWeight = b.dataset.tab === tab ? '900' : 'normal';
@@ -187,8 +179,7 @@ async function render(isInitial = false) {
   const currentAmt = val('#amount');
   const currentTitle = val('#title');
 
-  let pairName = 'ふたりの家計';
-  let inviteCode = '';
+  let pairName = 'ふたりの家計'; let inviteCode = '';
   if (!isInitial) {
     const { data: p } = await supabase.from('pairs').select('name,invite_code').eq('id', pair).single();
     if (p) { pairName = p.name; inviteCode = p.invite_code; }
@@ -208,24 +199,16 @@ async function render(isInitial = false) {
   });
 
   settlements.forEach(s => {
-    const fId = s.from_user_id;
-    const tId = s.to_user_id;
+    const fId = s.from_user_id; const tId = s.to_user_id;
     if (fId && bals[fId] !== undefined) bals[fId] += Number(s.amount);
     if (tId && bals[tId] !== undefined) bals[tId] -= Number(s.amount);
   });
 
-  let amount = 0;
-  let receiver = members[0]?.user_id;
-  let sender = members[1]?.user_id;
-
+  let amount = 0; let receiver = members[0]?.user_id; let sender = members[1]?.user_id;
   if (members.length === 2) {
-    const u1 = members[0].user_id;
-    const u2 = members[1].user_id;
-    if (bals[u1] > 0) {
-      receiver = u1; sender = u2; amount = bals[u1];
-    } else {
-      receiver = u2; sender = u1; amount = Math.abs(bals[u2] || 0);
-    }
+    const u1 = members[0].user_id; const u2 = members[1].user_id;
+    if (bals[u1] > 0) { receiver = u1; sender = u2; amount = bals[u1]; } 
+    else { receiver = u2; sender = u1; amount = Math.abs(bals[u2] || 0); }
   }
 
   const stateObj = { amount, sender, receiver };
@@ -241,7 +224,6 @@ async function render(isInitial = false) {
   
   const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
   const utils = JSON.parse(localStorage.getItem(`utils_${pair}`) || '[]');
-  
   const schedules = JSON.parse(localStorage.getItem(`sched_${pair}`) || '[]').map((s:any) => ({
     ...s, startDate: s.startDate || s.date, endDate: s.endDate || s.date,
     startTime: s.startTime || '', endTime: s.endTime || '', recurrence: s.recurrence || 'none'
@@ -264,8 +246,7 @@ async function render(isInitial = false) {
   if (sortedUtilMonths.length === 0) {
     graphHtml = '<p class="muted" style="width:100%; text-align:center; padding: 20px 0;">データがありません</p>';
   } else if (utilViewMode === 'trend') {
-    const width = 320; const height = 130;
-    const padX = 30; const padY = 20;
+    const width = 320; const height = 130; const padX = 30; const padY = 20;
     const usableW = width - padX * 2; const usableH = height - padY * 2;
     const step = sortedUtilMonths.length > 1 ? usableW / (sortedUtilMonths.length - 1) : usableW / 2;
     
@@ -314,12 +295,10 @@ async function render(isInitial = false) {
     } else {
       const e = item.data;
       const isDel = typeof e.title === 'string' && e.title.startsWith('[削除済]');
-      let displayTitle = e.title;
-      let delName = '';
+      let displayTitle = e.title; let delName = '';
       if (isDel) {
         const parts = e.title.replace('[削除済] ', '').split('::');
-        delName = name(parts[0]); 
-        displayTitle = parts.slice(1).join('::');
+        delName = name(parts[0]); displayTitle = parts.slice(1).join('::');
       }
 
       timelineHtml += `<div class="expense ${isDel ? 'deleted-log' : ''}">
@@ -333,9 +312,7 @@ async function render(isInitial = false) {
         <div class="expense-right">
           ${isDel ? `<del style="color:#b5a6ac;"><b>${yen(e.amount)}</b></del>` : `<b>${yen(e.amount)}</b>`}
           <div style="margin-top: 6px;">
-            ${!isDel 
-              ? `<button class="del ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #bf4f68; border-radius: 8px;">削除</button>` 
-              : `<button class="restore ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #765d8b; border-radius: 8px;">戻す</button>`}
+            ${!isDel ? `<button class="del ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #bf4f68; border-radius: 8px;">削除</button>` : `<button class="restore ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #765d8b; border-radius: 8px;">戻す</button>`}
           </div>
         </div>
       </div>`;
@@ -601,10 +578,10 @@ async function render(isInitial = false) {
           <button id="resetUtilsBtn" class="ghost full" style="color:#a13c52; background:#ffe5e9;">水道代・光熱費の記録をすべて削除</button>
         </div>
         <button id="out" class="ghost full">ログアウト</button>
-
-        <!-- ★ 更新が確認できるバージョン表示を追加 -->
-        <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac;">
-          App Version: 2.1.0<br>(API v1 / トースト通知対応)
+        
+        <!-- ★ 更新確認用 -->
+        <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
+          App Version: 3.0.0<br>（爆速起動＆レシート修正版）
         </div>
       </section>
 
@@ -786,12 +763,12 @@ function wire(state: any) {
     const title = val('#schedTitle').trim();
     const startTime = val('#schedStartTime');
     const endTime = val('#schedEndTime');
-    if (!title) return alert('予定を入力してください');
+    if (!title) { showToast('⚠️ 予定を入力してください', true); return; }
 
     const sched = JSON.parse(localStorage.getItem(`sched_${pair}`) || '[]');
 
     if (schedMode === 'multi') {
-      if (schedSelectedDates.length === 0) return alert('カレンダーから日付を選択してください');
+      if (schedSelectedDates.length === 0) { showToast('⚠️ 日付を選択してください', true); return; }
       schedSelectedDates.forEach(d => {
         sched.push({ id: Date.now().toString() + Math.random(), title, startDate: d, endDate: d, startTime, endTime, recurrence: 'none' });
       });
@@ -800,7 +777,7 @@ function wire(state: any) {
       const startDate = val('#schedStartDate');
       let endDate = val('#schedEndDate') || startDate;
       const recurrence = val('#schedRecurrence');
-      if (!startDate) return alert('開始日を入力してください');
+      if (!startDate) { showToast('⚠️ 開始日を入力してください', true); return; }
       if (endDate < startDate) endDate = startDate;
       sched.push({ id: Date.now().toString(), title, startDate, endDate, startTime, endTime, recurrence });
     }
@@ -855,13 +832,16 @@ function wire(state: any) {
     };
   });
 
-  // ★ APIエラーを完全に解消したレシート読込処理（安定版 v1 エンドポイントに変更）
+  // ★ API通信（確実な v1beta / gemini-1.5-flash エンドポイント）
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
     if (!file) return;
     const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-    if (!apiKey || apiKey === '') return alert('エラー：VITE_GEMINI_API_KEY が .env ファイルに設定されていません。');
+    if (!apiKey || apiKey === '') {
+      showToast('⚠️ APIキーが設定されていません', true);
+      return;
+    }
 
     q('#receiptModal').style.display = 'flex';
     q('#receiptLoading').style.display = 'block';
@@ -872,8 +852,7 @@ function wire(state: any) {
     reader.onload = async (ev) => {
       const base64 = (ev.target?.result as string).split(',')[1];
       try {
-        // ★ 変更点: v1beta ではなく v1 の安定板エンドポイントを使用
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -915,7 +894,7 @@ function wire(state: any) {
     q('#title').value = 'スーパー (レシート自動計算)';
     showCalc();
     q('#receiptModal').style.display = 'none';
-    showToast('📝 仕分けを反映しました'); // 追加！
+    showToast('📝 仕分けを反映しました'); 
   });
 
   q('#monthSelect')?.addEventListener('change', (e: any) => { currentMonth = e.target.value; render(); });
@@ -929,7 +908,7 @@ function wire(state: any) {
 
   q('#addUtilBtn')?.addEventListener('click', () => {
     const month = val('#utilMonth'); const type = val('#utilType'); const amount = Number(val('#utilAmount'));
-    if (!month || !amount) return alert('月と金額を入力してください');
+    if (!month || !amount) { showToast('⚠️ 月と金額を入力してください', true); return; }
     const utils = JSON.parse(localStorage.getItem(`utils_${pair}`) || '[]');
     utils.push({ id: Date.now().toString(), month, type, amount });
     localStorage.setItem(`utils_${pair}`, JSON.stringify(utils)); 
@@ -948,7 +927,7 @@ function wire(state: any) {
 
   q('#addSubBtn')?.addEventListener('click', () => {
     const title = val('#subTitle').trim(); const amount = Number(val('#subAmount')); const date = val('#subDate'); const payer = val('#subPayer');
-    if (!title || !amount) return alert('名前と金額を正しく入力してください');
+    if (!title || !amount) { showToast('⚠️ 名前と金額を正しく入力してください', true); return; }
     const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
     subs.push({ id: Date.now().toString(), title, amount, date, payer_id: payer });
     localStorage.setItem(`subs_${pair}`, JSON.stringify(subs)); 
@@ -974,7 +953,7 @@ function wire(state: any) {
   });
 
   q('#updateNameBtn')?.addEventListener('click', async () => {
-    const newName = val('#myName').trim(); if (!newName) return alert('名前を入力してください');
+    const newName = val('#myName').trim(); if (!newName) { showToast('⚠️ 名前を入力してください', true); return; }
     const { error } = await supabase.from('profiles').update({ display_name: newName }).eq('id', uid);
     if (error) return alert(error.message); 
     showToast('👤 名前を更新しました');
@@ -1003,8 +982,8 @@ function wire(state: any) {
   
   q('#settleBtn')?.addEventListener('click', () => {
     const inputAmt = Number(val('#settleAmount'));
-    if (!inputAmt || inputAmt <= 0) return alert('精算金額を正しく入力してください');
-    if (inputAmt > state.amount) return alert('現在の精算残高より多い金額は入力できません');
+    if (!inputAmt || inputAmt <= 0) return showToast('⚠️ 金額を正しく入力してください', true);
+    if (inputAmt > state.amount) return showToast('⚠️ 残高より多い金額は入力できません', true);
     state.amount = inputAmt; settle(state);
   });
   
@@ -1012,7 +991,9 @@ function wire(state: any) {
     const id = b.dataset.id; const e = expenses.find(x => x.id === id);
     if(e) {
       const { error } = await supabase.from('expenses').update({ title: '[削除済] ' + uid + '::' + (e.title || '支出') }).eq('id', id);
-      if (error) return alert('削除に失敗しました。\n' + error.message); await load(); render();
+      if (error) return alert('削除に失敗しました。\n' + error.message); 
+      showToast('🗑 削除しました');
+      await load(); render();
     }
   });
 
@@ -1022,7 +1003,9 @@ function wire(state: any) {
     if(e) {
       const originalTitle = e.title.replace('[削除済] ', '').split('::').slice(1).join('::');
       const { error } = await supabase.from('expenses').update({ title: originalTitle }).eq('id', id);
-      if (error) return alert('復元に失敗しました。\n' + error.message); await load(); render();
+      if (error) return alert('復元に失敗しました。\n' + error.message); 
+      showToast('↩️ 復元しました');
+      await load(); render();
     }
   });
 
@@ -1030,7 +1013,9 @@ function wire(state: any) {
     if (!confirm('この精算を取り消しますか？')) return;
     const id = b.dataset.id;
     const { error } = await supabase.from('settlements').delete().eq('id', id);
-    if (error) return alert('取り消しに失敗しました。\n' + error.message); await load(); render();
+    if (error) return alert('取り消しに失敗しました。\n' + error.message); 
+    showToast('↩️ 精算を取り消しました');
+    await load(); render();
   });
 }
 
@@ -1046,7 +1031,7 @@ async function settle(x: any) {
 
 async function save() {
   const amount = calc();
-  if (!Number.isFinite(amount)) return alert('金額または計算式を確認してください');
+  if (!Number.isFinite(amount)) return showToast('⚠️ 金額または計算式を確認してください', true);
   const { error } = await supabase.rpc('add_shared_expense', {
     input_pair_id: pair, input_title: val('#title').trim() || '支出', input_amount: amount, input_payer_id: val('#payer'), input_category: val('#cat') || 'その他', input_expense_date: getToday(), input_memo: null
   });
@@ -1054,8 +1039,6 @@ async function save() {
   await load();
   
   q('#amount').value = ''; q('#title').value = ''; showCalc(); render(); 
-  
-  // ★ 邪魔な alert をやめて、ふわっと出る緑の通知を表示
   showToast('✅ 追加しました！');
 }
 
