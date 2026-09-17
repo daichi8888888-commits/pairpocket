@@ -389,7 +389,6 @@ async function render(isInitial = false) {
           
           <div style="border-top: 1px solid #f0dfe4; margin: 20px 0 15px;"></div>
 
-          <!-- ★サブスクボタンを内容（任意）の上に移動 -->
           ${subs.length > 0 ? `
             <label class="muted" style="display:block; margin-bottom:6px;">定額・サブスクから入力</label>
             <div style="overflow-x: auto; white-space: nowrap; padding-bottom: 8px; margin-bottom: 15px;">
@@ -460,7 +459,6 @@ async function render(isInitial = false) {
              <button id="btnModeSpan" class="sched-mode-btn inactive">期間・繰り返し</button>
           </div>
 
-          <!-- 複数日カレンダーモード -->
           <div id="wrapMulti">
             <div style="display:flex; justify-content:space-between; align-items:center; background:#fff; padding:6px 12px; border-radius:12px; border:1px solid #f0dfe4;">
                <button id="calPrev" class="ghost" style="padding:4px 12px; font-size:16px;">◀</button>
@@ -473,7 +471,6 @@ async function render(isInitial = false) {
             <div id="schedCalGrid" style="display:grid; grid-template-columns:repeat(7,1fr); gap:6px; margin-top:6px; padding-bottom:10px;"></div>
           </div>
 
-          <!-- 期間・繰り返しモード -->
           <div id="wrapSpan" class="hide">
             <div style="display:flex; gap:8px; align-items: center; margin-bottom: 8px;">
               <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">開始</span>
@@ -578,7 +575,8 @@ async function render(isInitial = false) {
       <section id="sec-settings">
         <div class="card" style="margin-top: 20px;">
           <h2>招待コード</h2>
-          <div class="big" style="color: #e7617d;">${esc(p?.invite_code)}</div><p class="muted">${members.length}/2人</p>
+          <!-- ★ エラーの原因を修正！正しくは inviteCode -->
+          <div class="big" style="color: #e7617d;">${esc(inviteCode)}</div><p class="muted">${members.length}/2人</p>
         </div>
         <div class="card">
           <h2>プロフィール設定</h2>
@@ -843,7 +841,6 @@ function wire(state: any) {
     };
   });
 
-  // ★ レシート読込処理（バージョンを最新の flash-latest に修正）
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
