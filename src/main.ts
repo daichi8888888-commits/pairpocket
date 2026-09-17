@@ -578,9 +578,8 @@ async function render(isInitial = false) {
         </div>
         <button id="out" class="ghost full">ログアウト</button>
 
-        <!-- ★ 更新確認用 -->
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 5.0.0<br>（AIモデル自動検索機能 搭載）
+          App Version: 6.0.0<br>（Gemini 3.6 搭載 完全版）
         </div>
       </section>
 
@@ -831,7 +830,7 @@ function wire(state: any) {
     };
   });
 
-  // ★ API通信部分（自動モデル検索機能）
+  // ★ API通信部分（Googleの指示通り gemini-3.6-flash を指定）
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
@@ -843,34 +842,16 @@ function wire(state: any) {
     }
 
     q('#receiptModal').style.display = 'flex';
-    q('#receiptItemsWrap').style.display = 'none';
-    q('#receiptFooter').style.display = 'none';
+    q('#receiptLoading').style.display = 'block';
+    if(q('#receiptItemsWrap')) q('#receiptItemsWrap').style.display = 'none';
+    if(q('#receiptFooter')) q('#receiptFooter').style.display = 'none';
     
     const reader = new FileReader();
     reader.onload = async (ev) => {
       const base64 = (ev.target?.result as string).split(',')[1];
       try {
-        // ★ 1. Googleに「今使えるモデル一覧」を直接聞く
-        q('#receiptLoading').style.display = 'block';
-        q('#receiptLoading').innerHTML = '<div style="font-size: 40px; margin-bottom: 15px;">🔍🤖</div>AIモデルを検索中...';
-        
-        const modelRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
-        const modelData = await modelRes.json();
-        if (!modelRes.ok) throw new Error('APIキーが無効か、通信エラーです');
-
-        const validModels = modelData.models.filter((m:any) => m.supportedGenerationMethods?.includes('generateContent'));
-        
-        let targetModel = validModels.find((m:any) => m.name.includes('flash') && !m.name.includes('8b'));
-        if (!targetModel) targetModel = validModels.find((m:any) => m.name.includes('pro'));
-        if (!targetModel) targetModel = validModels[0];
-
-        if (!targetModel) throw new Error('利用可能なAIモデルがありません');
-        const modelName = targetModel.name.replace('models/', '');
-
-        q('#receiptLoading').innerHTML = `<div style="font-size: 40px; margin-bottom: 15px;">🤖📸</div>${modelName} で解析中...<br><span style="font-size: 12px; font-weight: normal;">数秒かかります</span>`;
-
-        // ★ 2. 見つけた最新のモデルを使って画像を送信する
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+        // ★ エラーの指示通り、URLを最新の gemini-3.6-flash に固定しました！
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
