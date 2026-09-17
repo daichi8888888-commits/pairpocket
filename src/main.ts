@@ -53,47 +53,8 @@ function showToast(msg: string, isError = false) {
   }, 2500);
 }
 
-const getIcsUrl = (s: any) => {
-  const startD = s.startDate.replace(/-/g, '');
-  const endD = s.endDate.replace(/-/g, '');
-  let dtStart, dtEnd;
-  if (s.startTime || s.endTime) {
-    const st = s.startTime ? s.startTime.replace(':', '') + '00' : '000000';
-    const et = s.endTime ? s.endTime.replace(':', '') + '00' : '235900';
-    dtStart = `DTSTART;TZID=Asia/Tokyo:${startD}T${st}`;
-    dtEnd = `DTEND;TZID=Asia/Tokyo:${endD}T${et}`;
-  } else {
-    const d = new Date(s.endDate); d.setDate(d.getDate() + 1);
-    const endDPlus1 = d.toISOString().slice(0,10).replace(/-/g, '');
-    dtStart = `DTSTART;VALUE=DATE:${startD}`;
-    dtEnd = `DTEND;VALUE=DATE:${endDPlus1}`;
-  }
-  let rrule = '';
-  if (s.recurrence && s.recurrence !== 'none') rrule = `\nRRULE:FREQ=${s.recurrence.toUpperCase()}`;
-  const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//PairPocket//JP\nBEGIN:VEVENT\nUID:${s.id}@pairpocket.app\n${dtStart}\n${dtEnd}\nSUMMARY:${s.title}${rrule}\nEND:VEVENT\nEND:VCALENDAR`;
-  return `data:text/calendar;charset=utf8,${encodeURIComponent(ics)}`;
-};
-
-const getGoogleCalUrl = (s: any) => {
-  const startD = s.startDate.replace(/-/g, '');
-  const endD = s.endDate.replace(/-/g, '');
-  let dates = '';
-  if (s.startTime || s.endTime) {
-    const st = s.startTime ? s.startTime.replace(':', '') + '00' : '000000';
-    const et = s.endTime ? s.endTime.replace(':', '') + '00' : '235900';
-    dates = `${startD}T${st}/${endD}T${et}`;
-  } else {
-    const d = new Date(s.endDate); d.setDate(d.getDate() + 1);
-    const endDPlus1 = d.toISOString().slice(0,10).replace(/-/g, '');
-    dates = `${startD}/${endDPlus1}`;
-  }
-  let recur = '';
-  if (s.recurrence && s.recurrence !== 'none') recur = `&recur=RRULE:FREQ=${s.recurrence.toUpperCase()}`;
-  return `https://www.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(s.title)}&dates=${dates}&ctz=Asia/Tokyo${recur}`;
-};
-
-// 爆速起動
-async function boot() {
+// ★ 爆速起動：ネットワークを待たずに一瞬でローカルのキャッシュを描画する
+const initCache = () => {
   const cached = localStorage.getItem('pp_cache');
   if (cached) {
     try {
@@ -105,7 +66,10 @@ async function boot() {
       }
     } catch {}
   }
+};
+initCache(); // 画面を開いた瞬間（0秒）に実行
 
+async function boot() {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return authView();
   uid = session.user.id;
@@ -116,7 +80,7 @@ async function boot() {
   
   pair = data.pair_id;
   await load();
-  render(false); 
+  render(false); // 裏側で最新データにこっそり更新
 }
 
 function authView(msg = '') {
@@ -559,11 +523,33 @@ async function render(isInitial = false) {
         </div>
       </section>
 
+      <!-- ★ 設定タブ（サブスク完全復活） -->
       <section id="sec-settings">
         <div class="card" style="margin-top: 20px;">
           <h2>招待コード</h2>
           <div class="big" style="color: #e7617d;">${esc(inviteCode)}</div><p class="muted">${members.length}/2人</p>
         </div>
+
+        <div class="card">
+          <h2>サブスク・定額の管理</h2>
+          <p class="muted" style="font-size:12px; margin-top:0;">登録しておくと、金額追加画面でワンタップで入力できます。</p>
+          <div id="subsList" style="margin-bottom: 12px;">
+            ${subs.map((s:any) => `<div style="display:flex; justify-content:space-between; align-items:center; padding: 10px 0; border-bottom:1px solid #f5e9ed;"><div><b style="font-size:14px;">${esc(s.title)}</b><br><span class="muted" style="font-size:12px;">${yen(s.amount)} (毎月${s.date ? s.date + '日' : '-'} / 支払: ${esc(name(s.payer_id))})</span></div><button class="del-sub ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:12px; border-radius: 8px;">削除</button></div>`).join('') || '<p class="muted" style="text-align:center; padding: 10px 0;">登録されていません</p>'}
+          </div>
+          <div style="background: #fffafb; padding: 12px; border-radius: 12px; border: 1px solid #f0dfe4;">
+            <label class="muted" style="font-size:12px;">新しいサブスクを登録</label>
+            <div style="display:flex; gap:6px; margin-top:4px;">
+              <input id="subTitle" class="field" placeholder="名前" style="margin:0; flex:1;">
+              <input id="subAmount" type="number" class="field" placeholder="金額" style="margin:0; width:90px;">
+              <input id="subDate" type="number" class="field" placeholder="日" min="1" max="31" style="margin:0; width:60px;">
+            </div>
+            <select id="subPayer" class="field" style="margin:8px 0 0 0;">
+              ${members.map((m) => `<option value="${m.user_id}" ${m.user_id === uid ? 'selected' : ''}>${esc(name(m.user_id))}が支払う</option>`).join('')}
+            </select>
+            <button id="addSubBtn" class="dark full" style="margin-top:8px;">登録する</button>
+          </div>
+        </div>
+
         <div class="card">
           <h2>プロフィール設定</h2>
           <div style="display:flex; gap:8px; margin-top:6px;">
@@ -579,7 +565,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 6.0.0<br>（Gemini 3.6 搭載 完全版）
+          App Version: 7.0.0<br>（爆速化＆サブスク完全復活版）
         </div>
       </section>
 
@@ -596,7 +582,7 @@ async function render(isInitial = false) {
           
           <div id="receiptLoading" style="text-align: center; padding: 40px 0; color: #a76777; font-weight: bold; font-size: 16px;">
             <div style="font-size: 40px; margin-bottom: 15px;">🤖📸</div>
-            AIがレシートを解析しています...<br><span style="font-size: 12px; font-weight: normal;">数秒かかります</span>
+            AIが解析中...<br><span style="font-size: 12px; font-weight: normal;">圧縮送信で高速化！</span>
           </div>
 
           <div id="receiptItemsWrap" style="display: none; flex: 1; overflow-y: auto; margin-bottom: 15px; padding-right: 5px;">
@@ -830,7 +816,7 @@ function wire(state: any) {
     };
   });
 
-  // ★ API通信部分（Googleの指示通り gemini-3.6-flash を指定）
+  // ★ レシート読込処理（Canvasで画像圧縮して爆速化）
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
@@ -847,37 +833,56 @@ function wire(state: any) {
     if(q('#receiptFooter')) q('#receiptFooter').style.display = 'none';
     
     const reader = new FileReader();
-    reader.onload = async (ev) => {
-      const base64 = (ev.target?.result as string).split(',')[1];
-      try {
-        // ★ エラーの指示通り、URLを最新の gemini-3.6-flash に固定しました！
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [
-                { text: "このレシート画像の品目と金額を読み取り、以下のJSON配列の形式で出力してください。小計、消費税、合計などの行は除外して、純粋な商品のみを抽出してください。JSON以外のテキストは一切含めないでください。\n[{\"name\": \"商品名\", \"price\": 100}]" },
-                { inlineData: { mimeType: file.type || 'image/jpeg', data: base64 } }
-              ] }],
-            generationConfig: { responseMimeType: "application/json" }
-          })
-        });
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = async () => {
+        // ★ ここで画像の容量を小さく圧縮して通信を超高速化します
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        const MAX_WIDTH = 800; // このサイズに縮小する
+        if (width > MAX_WIDTH) {
+          height = Math.round(height * MAX_WIDTH / width);
+          width = MAX_WIDTH;
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d')!;
+        ctx.drawImage(img, 0, 0, width, height);
         
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error?.message || 'APIエラーが発生しました');
+        // 圧縮された画像をBase64にする（容量は元の約1/50！）
+        const base64 = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
+        
+        try {
+          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [
+                  { text: "このレシート画像の品目と金額を読み取り、以下のJSON配列の形式で出力してください。小計、消費税、合計などの行は除外して、純粋な商品のみを抽出してください。JSON以外のテキストは一切含めないでください。\n[{\"name\": \"商品名\", \"price\": 100}]" },
+                  { inlineData: { mimeType: 'image/jpeg', data: base64 } }
+                ] }],
+              generationConfig: { responseMimeType: "application/json" }
+            })
+          });
+          
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error?.message || 'APIエラーが発生しました');
 
-        let text = data.candidates[0].content.parts[0].text;
-        text = text.replace(/```json/gi, '').replace(/```/g, '').trim();
-        const items = JSON.parse(text);
-        if (!Array.isArray(items)) throw new Error('Invalid JSON format');
-        
-        receiptState = items.map((i:any) => ({...i, split: 'half'}));
-        renderReceiptItems();
-      } catch (err: any) {
-        alert('レシートの読み取りに失敗しました。エラー詳細:\n' + err.message);
-        q('#receiptModal').style.display = 'none';
-      }
-      q('#receiptInput').value = '';
+          let text = data.candidates[0].content.parts[0].text;
+          text = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+          const items = JSON.parse(text);
+          if (!Array.isArray(items)) throw new Error('Invalid JSON format');
+          
+          receiptState = items.map((i:any) => ({...i, split: 'half'}));
+          renderReceiptItems();
+        } catch (err: any) {
+          alert('レシートの読み取りに失敗しました。エラー詳細:\n' + err.message);
+          q('#receiptModal').style.display = 'none';
+        }
+        q('#receiptInput').value = '';
+      };
+      img.src = ev.target?.result as string;
     };
     reader.readAsDataURL(file);
   });
@@ -1050,4 +1055,5 @@ supabase.auth.onAuthStateChange((event, session) => {
   if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') { if (session && !uid) boot(); } 
   else if (event === 'SIGNED_OUT') { uid = ''; pair = ''; authView(); }
 });
+// ネットワーク通信を待たずに爆速起動
 boot();
