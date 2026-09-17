@@ -23,46 +23,69 @@ const fmtTime = (raw: string) => {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
-const getIcsUrl = (title: string, date: string) => {
-  const start = date.replace(/-/g, '');
-  const d = new Date(date); d.setDate(d.getDate() + 1);
-  const end = d.toISOString().slice(0, 10).replace(/-/g, '');
-  const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART;VALUE=DATE:${start}\nDTEND;VALUE=DATE:${end}\nSUMMARY:${title}\nEND:VEVENT\nEND:VCALENDAR`;
+// 🍎 Appleカレンダー用 (.ics) - 時間・複数日・繰り返し対応
+const getIcsUrl = (s: any) => {
+  const startD = s.startDate.replace(/-/g, '');
+  const endD = s.endDate.replace(/-/g, '');
+  let dtStart, dtEnd;
+
+  if (s.startTime || s.endTime) {
+    const st = s.startTime ? s.startTime.replace(':', '') + '00' : '000000';
+    const et = s.endTime ? s.endTime.replace(':', '') + '00' : '235900';
+    dtStart = `DTSTART;TZID=Asia/Tokyo:${startD}T${st}`;
+    dtEnd = `DTEND;TZID=Asia/Tokyo:${endD}T${et}`;
+  } else {
+    // 終日の場合は終了日に+1日する（iCalendarの仕様）
+    const d = new Date(s.endDate);
+    d.setDate(d.getDate() + 1);
+    const endDPlus1 = d.toISOString().slice(0,10).replace(/-/g, '');
+    dtStart = `DTSTART;VALUE=DATE:${startD}`;
+    dtEnd = `DTEND;VALUE=DATE:${endDPlus1}`;
+  }
+
+  let rrule = '';
+  if (s.recurrence && s.recurrence !== 'none') {
+    rrule = `\nRRULE:FREQ=${s.recurrence.toUpperCase()}`;
+  }
+  
+  const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\n${dtStart}\n${dtEnd}\nSUMMARY:${s.title}${rrule}\nEND:VEVENT\nEND:VCALENDAR`;
   return `data:text/calendar;charset=utf8,${encodeURIComponent(ics)}`;
 };
 
-const getGoogleCalUrl = (title: string, date: string) => {
-  const start = date.replace(/-/g, '');
-  const d = new Date(date); d.setDate(d.getDate() + 1);
-  const end = d.toISOString().slice(0, 10).replace(/-/g, '');
-  return `https://www.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${start}/${end}`;
+// 🇬 Googleカレンダー用 - 時間・複数日・繰り返し対応
+const getGoogleCalUrl = (s: any) => {
+  const startD = s.startDate.replace(/-/g, '');
+  const endD = s.endDate.replace(/-/g, '');
+  let dates = '';
+
+  if (s.startTime || s.endTime) {
+    const st = s.startTime ? s.startTime.replace(':', '') + '00' : '000000';
+    const et = s.endTime ? s.endTime.replace(':', '') + '00' : '235900';
+    dates = `${startD}T${st}/${endD}T${et}`;
+  } else {
+    const d = new Date(s.endDate);
+    d.setDate(d.getDate() + 1);
+    const endDPlus1 = d.toISOString().slice(0,10).replace(/-/g, '');
+    dates = `${startD}/${endDPlus1}`;
+  }
+
+  let recur = '';
+  if (s.recurrence && s.recurrence !== 'none') {
+    recur = `&recur=RRULE:FREQ=${s.recurrence.toUpperCase()}`;
+  }
+  return `https://www.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(s.title)}&dates=${dates}&ctz=Asia/Tokyo${recur}`;
 };
 
 async function boot() {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return authView();
   uid = session.user.id;
-
-  // ★ 爆速表示のためのキャッシュ読み込み ★
-  const cached = localStorage.getItem('pp_cache');
-  if (cached) {
-    try {
-      const x = JSON.parse(cached);
-      if (x.uid === uid) {
-        pair = x.pair; members = x.members || []; expenses = x.expenses || [];
-        settlements = x.settlements || []; balances = x.balances || [];
-        render(true); // 通信を待たずに保存済みのデータで一瞬で画面を描画
-      }
-    } catch {}
-  }
-
-  // 裏側で最新データをサーバーから取得
   const { data, error } = await supabase.from('pair_members').select('pair_id').eq('user_id', uid).maybeSingle();
   if (error) return fail(error.message);
   if (!data) return pairView();
   pair = data.pair_id;
   await load();
-  render(false); // 最新データにこっそり更新
+  render(); 
 }
 
 function authView(msg = '') {
@@ -100,10 +123,10 @@ async function load() {
   ]);
   const er = m.error || e.error || b.error || s.error;
   if (er) return fail(er.message);
-  members = m.data || []; expenses = e.data || []; balances = b.data || []; settlements = s.data || [];
-  
-  // 次回の爆速起動のために最新データをスマホに一時保存
-  localStorage.setItem('pp_cache', JSON.stringify({ uid, pair, members, expenses, balances, settlements }));
+  members = m.data || [];
+  expenses = e.data || [];
+  balances = b.data || [];
+  settlements = s.data || [];
 }
 
 function setTab(tab: string) {
@@ -123,20 +146,8 @@ function setTab(tab: string) {
   });
 }
 
-// 描画処理 (isInitial は初回キャッシュロードかどうか)
-async function render(isInitial = false) {
-  // すでに入力中のテキストがあれば保持して、再描画で消えないようにする
-  const currentAmt = val('#amount');
-  const currentTitle = val('#title');
-
-  let pairName = 'ふたりの家計';
-  let inviteCode = '';
-  // ネットワーク通信を待たずに描画するため、キャッシュがない時は名前を省略
-  if (!isInitial) {
-    const { data: p } = await supabase.from('pairs').select('name,invite_code').eq('id', pair).single();
-    if (p) { pairName = p.name; inviteCode = p.invite_code; }
-  }
-
+async function render() {
+  const { data: p } = await supabase.from('pairs').select('name,invite_code').eq('id', pair).single();
   const name = (id: string) => members.find(x => x.user_id === id)?.profiles?.display_name || balances.find(x => x.user_id === id)?.display_name || 'メンバー';
   
   let bals: Record<string, number> = {};
@@ -184,7 +195,16 @@ async function render(isInitial = false) {
   
   const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
   const utils = JSON.parse(localStorage.getItem(`utils_${pair}`) || '[]');
-  const schedules = JSON.parse(localStorage.getItem(`sched_${pair}`) || '[]');
+  
+  // スケジュールのデータ構造をアップデート（古いデータの互換性対応）
+  const schedules = JSON.parse(localStorage.getItem(`sched_${pair}`) || '[]').map((s:any) => ({
+    ...s,
+    startDate: s.startDate || s.date,
+    endDate: s.endDate || s.date,
+    startTime: s.startTime || '',
+    endTime: s.endTime || '',
+    recurrence: s.recurrence || 'none'
+  }));
 
   const utilsMap: Record<string, {water: number, energy: number}> = {};
   utils.forEach((u: any) => {
@@ -287,7 +307,7 @@ async function render(isInitial = false) {
   app.innerHTML = `
     <main class="app">
       <div class="top" style="margin-top: 10px; position: relative;">
-        <div><div class="brand">♥ PairPocket</div><div class="muted" style="margin-left: 2px;">${esc(pairName)}</div></div>
+        <div><div class="brand">♥ PairPocket</div><div class="muted" style="margin-left: 2px;">${esc(p?.name || 'ふたりの家計')}</div></div>
         <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 20px; position: absolute; right: 0; top: 0; border-radius: 12px;">☰</button>
       </div>
       
@@ -320,8 +340,7 @@ async function render(isInitial = false) {
           <label class="muted">相手への請求額</label>
           <div class="money" style="margin-top: 8px;">
             <span>¥</span>
-            <!-- ★起動時にすぐ打てるよう autofocus を追加 -->
-            <input type="text" id="amount" inputmode="numeric" placeholder="1200+350" value="${currentAmt}" autofocus>
+            <input type="text" id="amount" inputmode="numeric" placeholder="1200+350">
           </div>
           
           <div class="calc-buttons">
@@ -345,7 +364,7 @@ async function render(isInitial = false) {
           <div style="border-top: 1px solid #f0dfe4; margin: 20px 0 15px;"></div>
 
           <label class="muted">内容（任意）</label>
-          <input id="title" class="field" placeholder="例：カフェ、スーパー" value="${currentTitle}">
+          <input id="title" class="field" placeholder="例：カフェ、スーパー">
           
           <label class="muted">カテゴリー</label>
           <select id="cat" class="field">
@@ -397,39 +416,80 @@ async function render(isInitial = false) {
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
           <h2 style="margin: 0; font-size: 18px;">📅 ふたりの予定</h2>
         </div>
+        
         <div class="card" style="background: #fffafb; border: 1px solid #f0dfe4;">
           <h2>新しい予定を登録</h2>
           <input id="schedTitle" class="field" placeholder="予定 (例: ディズニー旅行)">
-          <div style="display:flex; gap:8px;">
-            <input id="schedDate" type="date" class="field" style="margin-bottom:0;" value="${getToday()}">
-            <button id="addSchedBtn" class="primary" style="white-space:nowrap;">登録</button>
+          
+          <div style="display:flex; gap:8px; align-items: center; margin-bottom: 8px;">
+            <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">開始</span>
+            <input id="schedStartDate" type="date" class="field" style="margin:0; flex:1;" value="${getToday()}">
+            <input id="schedStartTime" type="time" class="field" style="margin:0; width:95px;">
           </div>
+
+          <div style="display:flex; gap:8px; align-items: center; margin-bottom: 8px;">
+            <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">終了</span>
+            <input id="schedEndDate" type="date" class="field" style="margin:0; flex:1;" value="${getToday()}">
+            <input id="schedEndTime" type="time" class="field" style="margin:0; width:95px;">
+          </div>
+
+          <div style="display:flex; gap:8px; align-items: center; margin-bottom: 15px;">
+            <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">繰返</span>
+            <select id="schedRecurrence" class="field" style="margin:0; flex:1;">
+              <option value="none">繰り返さない</option>
+              <option value="daily">毎日</option>
+              <option value="weekly">毎週</option>
+              <option value="monthly">毎月</option>
+              <option value="yearly">毎年</option>
+            </select>
+          </div>
+
+          <button id="addSchedBtn" class="primary full" style="padding: 14px;">リストに追加</button>
         </div>
+
         <div class="card">
           <h2>今後の予定</h2>
-          <p class="muted" style="margin-top:0;">カレンダーの共有機能を使えば、相手に通知がいきます！</p>
-          ${schedules.slice().sort((a:any, b:any) => a.date.localeCompare(b.date)).map((s:any) => `
+          <p class="muted" style="margin-top:0;">「カレンダーに登録」で相手と予定を共有できます。</p>
+          ${schedules.slice().sort((a:any, b:any) => a.startDate.localeCompare(b.startDate)).map((s:any) => {
+            let displayTime = s.startDate.replace(/-/g, '/');
+            if (s.startTime) displayTime += ` ${s.startTime}`;
+            if (s.endDate && s.endDate !== s.startDate) {
+              displayTime += ` 〜 ${s.endDate.replace(/-/g, '/')}`;
+              if (s.endTime) displayTime += ` ${s.endTime}`;
+            } else if (s.endTime) {
+              displayTime += ` 〜 ${s.endTime}`;
+            }
+            
+            let recurText = '';
+            if (s.recurrence === 'daily') recurText = ' <span style="background:#eaf2ee; color:#2c604f; padding:2px 6px; border-radius:4px; font-size:10px;">毎日</span>';
+            if (s.recurrence === 'weekly') recurText = ' <span style="background:#eaf2ee; color:#2c604f; padding:2px 6px; border-radius:4px; font-size:10px;">毎週</span>';
+            if (s.recurrence === 'monthly') recurText = ' <span style="background:#eaf2ee; color:#2c604f; padding:2px 6px; border-radius:4px; font-size:10px;">毎月</span>';
+            if (s.recurrence === 'yearly') recurText = ' <span style="background:#eaf2ee; color:#2c604f; padding:2px 6px; border-radius:4px; font-size:10px;">毎年</span>';
+
+            return `
             <div style="padding: 14px 0; border-bottom: 1px solid #f5e9ed;">
               <div style="display:flex; justify-content:space-between; align-items:flex-start;">
                 <div>
-                  <b style="font-size: 16px; color:#e7617d;">${esc(s.title)}</b>
-                  <div class="muted" style="font-weight:bold; margin-top:2px;">${s.date.replace(/-/g, '/')}</div>
+                  <b style="font-size: 16px; color:#e7617d;">${esc(s.title)}${recurText}</b>
+                  <div class="muted" style="font-weight:bold; margin-top:2px;">${displayTime}</div>
                 </div>
                 <button class="del-sched ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:11px; border-radius:6px; background:transparent;">削除</button>
               </div>
-              <div style="display:flex; gap: 8px; margin-top: 10px;">
-                <a href="${getIcsUrl(s.title, s.date)}" download="${s.title}.ics" style="flex:1; text-align:center; background:#f0dfe4; color:#59464e; padding:8px 0; border-radius:8px; font-size:12px; font-weight:bold; text-decoration:none;">🍎 Appleに追加</a>
-                <a href="${getGoogleCalUrl(s.title, s.date)}" target="_blank" style="flex:1; text-align:center; background:#f0dfe4; color:#59464e; padding:8px 0; border-radius:8px; font-size:12px; font-weight:bold; text-decoration:none;">🇬 Googleに追加</a>
+              <div style="display:flex; gap: 8px; margin-top: 12px;">
+                <a href="${getIcsUrl(s)}" download="${s.title}.ics" style="flex:1; text-align:center; background:#f0dfe4; color:#59464e; padding:8px 0; border-radius:8px; font-size:12px; font-weight:bold; text-decoration:none;">🍎 Appleに追加</a>
+                <a href="${getGoogleCalUrl(s)}" target="_blank" style="flex:1; text-align:center; background:#f0dfe4; color:#59464e; padding:8px 0; border-radius:8px; font-size:12px; font-weight:bold; text-decoration:none;">🇬 Googleに追加</a>
               </div>
             </div>
-          `).join('') || '<p class="muted" style="text-align:center; padding:10px 0;">まだ予定はありません</p>'}
+          `}).join('') || '<p class="muted" style="text-align:center; padding:10px 0;">まだ予定はありません</p>'}
         </div>
       </section>
 
       <!-- 水道光熱費タブ -->
       <section id="sec-utilities">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
+          <button id="closeUtils" class="ghost" style="padding: 10px 14px;">戻る</button>
           <h2 style="margin: 0; font-size: 18px;">💧 水道・光熱費</h2>
+          <div style="width: 60px;"></div>
         </div>
         <div class="card">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
@@ -459,7 +519,7 @@ async function render(isInitial = false) {
       <section id="sec-settings">
         <div class="card" style="margin-top: 20px;">
           <h2>招待コード</h2>
-          <div class="big" style="color: #e7617d;">${esc(inviteCode)}</div><p class="muted">${members.length}/2人</p>
+          <div class="big" style="color: #e7617d;">${esc(p?.invite_code)}</div><p class="muted">${members.length}/2人</p>
         </div>
         <div class="card">
           <h2>サブスク・定額の管理</h2>
@@ -506,12 +566,6 @@ async function render(isInitial = false) {
 
   wire(stateObj);
   setTab(currentTab); 
-  showCalc(); // 値を復元したときのために再計算
-  
-  // スマホですぐにフォーカスが当たるようにする
-  if (isInitial && currentTab === 'entry') {
-    setTimeout(() => q('#amount')?.focus(), 100);
-  }
 }
 
 function calc() {
@@ -544,13 +598,25 @@ function wire(state: any) {
     b.onclick = () => setTab(b.dataset.tab);
   });
 
+  // スケジュール追加ボタン処理
   q('#addSchedBtn')?.addEventListener('click', () => {
     const title = val('#schedTitle').trim();
-    const date = val('#schedDate');
-    if (!title || !date) return alert('予定と日付を入力してください');
+    const startDate = val('#schedStartDate');
+    const startTime = val('#schedStartTime');
+    let endDate = val('#schedEndDate') || startDate;
+    const endTime = val('#schedEndTime');
+    const recurrence = val('#schedRecurrence');
+
+    if (!title || !startDate) return alert('予定と開始日を入力してください');
+    
+    // 終了日が開始日より前なら自動補正
+    if (endDate < startDate) endDate = startDate;
+
     const sched = JSON.parse(localStorage.getItem(`sched_${pair}`) || '[]');
-    sched.push({ id: Date.now().toString(), title, date });
+    sched.push({ id: Date.now().toString(), title, startDate, startTime, endDate, endTime, recurrence });
     localStorage.setItem(`sched_${pair}`, JSON.stringify(sched));
+    
+    alert('リストに登録しました！\n下の「カレンダーに追加」ボタンを押してスマホにも登録してください。');
     render();
   });
 
@@ -669,7 +735,6 @@ function wire(state: any) {
   
   q('#out')?.addEventListener('click', logout);
   q('#amount')?.addEventListener('input', showCalc);
-  
   q('#saveTop')?.addEventListener('click', save);
   
   q('#settleBtn')?.addEventListener('click', () => {
