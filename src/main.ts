@@ -92,7 +92,7 @@ const getGoogleCalUrl = (s: any) => {
   return `https://www.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(s.title)}&dates=${dates}&ctz=Asia/Tokyo${recur}`;
 };
 
-// ★ 完全な爆速起動（ネットワーク通信を一切待たずに即描画）
+// 爆速起動
 async function boot() {
   const cached = localStorage.getItem('pp_cache');
   if (cached) {
@@ -106,7 +106,6 @@ async function boot() {
     } catch {}
   }
 
-  // 裏側で通信
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return authView();
   uid = session.user.id;
@@ -578,10 +577,9 @@ async function render(isInitial = false) {
           <button id="resetUtilsBtn" class="ghost full" style="color:#a13c52; background:#ffe5e9;">水道代・光熱費の記録をすべて削除</button>
         </div>
         <button id="out" class="ghost full">ログアウト</button>
-        
-        <!-- ★ 更新確認用 -->
+
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 3.0.0<br>（爆速起動＆レシート修正版）
+          App Version: 3.1.0<br>（API v1 完全修正版）
         </div>
       </section>
 
@@ -832,7 +830,7 @@ function wire(state: any) {
     };
   });
 
-  // ★ API通信（確実な v1beta / gemini-1.5-flash エンドポイント）
+  // ★ API通信部分（間違いなく v1 エンドポイントを使用）
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
@@ -852,7 +850,8 @@ function wire(state: any) {
     reader.onload = async (ev) => {
       const base64 = (ev.target?.result as string).split(',')[1];
       try {
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+        // 【修正箇所】URLの v1beta を v1 に完全に書き換えました。
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
