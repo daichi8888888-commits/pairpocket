@@ -7,6 +7,12 @@ let currentMonth = 'all';
 let utilViewMode: 'trend' | 'average' = 'trend'; 
 let currentTab = 'entry'; 
 
+// スケジュールUI用の状態
+let schedMode: 'multi' | 'span' = 'multi';
+let schedCalYear = new Date().getFullYear();
+let schedCalMonth = new Date().getMonth();
+let schedSelectedDates: string[] = [];
+
 const getToday = () => {
   const d = new Date();
   d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
@@ -35,7 +41,6 @@ const getIcsUrl = (s: any) => {
     dtStart = `DTSTART;TZID=Asia/Tokyo:${startD}T${st}`;
     dtEnd = `DTEND;TZID=Asia/Tokyo:${endD}T${et}`;
   } else {
-    // 終日の場合は終了日に+1日する（iCalendarの仕様）
     const d = new Date(s.endDate);
     d.setDate(d.getDate() + 1);
     const endDPlus1 = d.toISOString().slice(0,10).replace(/-/g, '');
@@ -44,9 +49,7 @@ const getIcsUrl = (s: any) => {
   }
 
   let rrule = '';
-  if (s.recurrence && s.recurrence !== 'none') {
-    rrule = `\nRRULE:FREQ=${s.recurrence.toUpperCase()}`;
-  }
+  if (s.recurrence && s.recurrence !== 'none') rrule = `\nRRULE:FREQ=${s.recurrence.toUpperCase()}`;
   
   const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\n${dtStart}\n${dtEnd}\nSUMMARY:${s.title}${rrule}\nEND:VEVENT\nEND:VCALENDAR`;
   return `data:text/calendar;charset=utf8,${encodeURIComponent(ics)}`;
@@ -70,9 +73,7 @@ const getGoogleCalUrl = (s: any) => {
   }
 
   let recur = '';
-  if (s.recurrence && s.recurrence !== 'none') {
-    recur = `&recur=RRULE:FREQ=${s.recurrence.toUpperCase()}`;
-  }
+  if (s.recurrence && s.recurrence !== 'none') recur = `&recur=RRULE:FREQ=${s.recurrence.toUpperCase()}`;
   return `https://www.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(s.title)}&dates=${dates}&ctz=Asia/Tokyo${recur}`;
 };
 
@@ -196,14 +197,9 @@ async function render() {
   const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
   const utils = JSON.parse(localStorage.getItem(`utils_${pair}`) || '[]');
   
-  // スケジュールのデータ構造をアップデート（古いデータの互換性対応）
   const schedules = JSON.parse(localStorage.getItem(`sched_${pair}`) || '[]').map((s:any) => ({
-    ...s,
-    startDate: s.startDate || s.date,
-    endDate: s.endDate || s.date,
-    startTime: s.startTime || '',
-    endTime: s.endTime || '',
-    recurrence: s.recurrence || 'none'
+    ...s, startDate: s.startDate || s.date, endDate: s.endDate || s.date,
+    startTime: s.startTime || '', endTime: s.endTime || '', recurrence: s.recurrence || 'none'
   }));
 
   const utilsMap: Record<string, {water: number, energy: number}> = {};
@@ -225,8 +221,7 @@ async function render() {
   } else if (utilViewMode === 'trend') {
     const width = 320; const height = 130;
     const padX = 30; const padY = 20;
-    const usableW = width - padX * 2;
-    const usableH = height - padY * 2;
+    const usableW = width - padX * 2; const usableH = height - padY * 2;
     const step = sortedUtilMonths.length > 1 ? usableW / (sortedUtilMonths.length - 1) : usableW / 2;
     
     const waterPts = sortedUtilMonths.map((m, i) => `${sortedUtilMonths.length > 1 ? padX + i * step : padX + step},${height - padY - (utilsMap[m].water / maxUtilAmt) * usableH}`);
@@ -278,8 +273,7 @@ async function render() {
       let delName = '';
       if (isDel) {
         const parts = e.title.replace('[削除済] ', '').split('::');
-        delName = name(parts[0]); 
-        displayTitle = parts.slice(1).join('::');
+        delName = name(parts[0]); displayTitle = parts.slice(1).join('::');
       }
 
       timelineHtml += `<div class="expense ${isDel ? 'deleted-log' : ''}">
@@ -293,9 +287,7 @@ async function render() {
         <div class="expense-right">
           ${isDel ? `<del style="color:#b5a6ac;"><b>${yen(e.amount)}</b></del>` : `<b>${yen(e.amount)}</b>`}
           <div style="margin-top: 6px;">
-            ${!isDel 
-              ? `<button class="del ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #bf4f68; border-radius: 8px;">削除</button>` 
-              : `<button class="restore ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #765d8b; border-radius: 8px;">戻す</button>`}
+            ${!isDel ? `<button class="del ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #bf4f68; border-radius: 8px;">削除</button>` : `<button class="restore ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #765d8b; border-radius: 8px;">戻す</button>`}
           </div>
         </div>
       </div>`;
@@ -305,6 +297,11 @@ async function render() {
   if (timeline.length === 0) timelineHtml = '<p class="muted" style="text-align: center; padding: 20px 0;">まだありません</p>';
 
   app.innerHTML = `
+    <style>
+      .sched-mode-btn { flex: 1; padding: 12px; border-radius: 12px; font-size: 13px; font-weight: bold; border: none; cursor: pointer; transition: 0.2s; white-space: nowrap;}
+      .sched-mode-btn.active { background: #ff8fa3; color: #fff; box-shadow: 0 4px 10px #ff8fa344; }
+      .sched-mode-btn.inactive { background: #fff0f3; color: #a76777; }
+    </style>
     <main class="app">
       <div class="top" style="margin-top: 10px; position: relative;">
         <div><div class="brand">♥ PairPocket</div><div class="muted" style="margin-left: 2px;">${esc(p?.name || 'ふたりの家計')}</div></div>
@@ -419,37 +416,63 @@ async function render() {
         
         <div class="card" style="background: #fffafb; border: 1px solid #f0dfe4;">
           <h2>新しい予定を登録</h2>
-          <input id="schedTitle" class="field" placeholder="予定 (例: ディズニー旅行)">
+          <input id="schedTitle" class="field" placeholder="予定 (例: ディズニー旅行)" style="margin-bottom: 15px;">
           
-          <div style="display:flex; gap:8px; align-items: center; margin-bottom: 8px;">
-            <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">開始</span>
-            <input id="schedStartDate" type="date" class="field" style="margin:0; flex:1;" value="${getToday()}">
-            <input id="schedStartTime" type="time" class="field" style="margin:0; width:95px;">
+          <div style="display:flex; gap:8px; margin-bottom: 15px;">
+             <button id="btnModeMulti" class="sched-mode-btn active">📅 カレンダーで複数日</button>
+             <button id="btnModeSpan" class="sched-mode-btn inactive">期間・繰り返し</button>
           </div>
 
-          <div style="display:flex; gap:8px; align-items: center; margin-bottom: 8px;">
-            <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">終了</span>
-            <input id="schedEndDate" type="date" class="field" style="margin:0; flex:1;" value="${getToday()}">
-            <input id="schedEndTime" type="time" class="field" style="margin:0; width:95px;">
+          <!-- 複数日カレンダーモード -->
+          <div id="wrapMulti">
+            <div style="display:flex; justify-content:space-between; align-items:center; background:#fff; padding:6px 12px; border-radius:12px; border:1px solid #f0dfe4;">
+               <button id="calPrev" class="ghost" style="padding:4px 12px; font-size:16px;">◀</button>
+               <span id="schedCalMonthLabel" style="font-weight:bold; color:#e7617d;"></span>
+               <button id="calNext" class="ghost" style="padding:4px 12px; font-size:16px;">▶</button>
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(7,1fr); text-align:center; font-size:11px; margin-top:10px; font-weight:bold;" class="muted">
+               <div style="color:#bf4f68;">日</div><div>月</div><div>火</div><div>水</div><div>木</div><div>金</div><div style="color:#7ab8e6;">土</div>
+            </div>
+            <div id="schedCalGrid" style="display:grid; grid-template-columns:repeat(7,1fr); gap:6px; margin-top:6px; padding-bottom:10px;"></div>
           </div>
 
+          <!-- 期間・繰り返しモード -->
+          <div id="wrapSpan" class="hide">
+            <div style="display:flex; gap:8px; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">開始</span>
+              <input id="schedStartDate" type="date" class="field" style="margin:0; flex:1;" value="${getToday()}">
+            </div>
+            <div style="display:flex; gap:8px; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">終了</span>
+              <input id="schedEndDate" type="date" class="field" style="margin:0; flex:1;" value="${getToday()}">
+            </div>
+            <div style="display:flex; gap:8px; align-items: center; margin-bottom: 10px;">
+              <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">繰返</span>
+              <select id="schedRecurrence" class="field" style="margin:0; flex:1;">
+                <option value="none">繰り返さない</option>
+                <option value="daily">毎日</option>
+                <option value="weekly">毎週</option>
+                <option value="monthly">毎月</option>
+                <option value="yearly">毎年</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="border-top: 1px solid #f0dfe4; margin: 15px 0;"></div>
+          
           <div style="display:flex; gap:8px; align-items: center; margin-bottom: 15px;">
-            <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">繰返</span>
-            <select id="schedRecurrence" class="field" style="margin:0; flex:1;">
-              <option value="none">繰り返さない</option>
-              <option value="daily">毎日</option>
-              <option value="weekly">毎週</option>
-              <option value="monthly">毎月</option>
-              <option value="yearly">毎年</option>
-            </select>
+            <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">時間</span>
+            <input id="schedStartTime" type="time" class="field" style="margin:0; flex:1;">
+            <span style="color:#a76777; font-weight:bold;">〜</span>
+            <input id="schedEndTime" type="time" class="field" style="margin:0; flex:1;">
           </div>
 
           <button id="addSchedBtn" class="primary full" style="padding: 14px;">リストに追加</button>
         </div>
 
-        <div class="card">
+        <div class="card history-scroll">
           <h2>今後の予定</h2>
-          <p class="muted" style="margin-top:0;">「カレンダーに登録」で相手と予定を共有できます。</p>
+          <p class="muted" style="margin-top:0;">カレンダーに登録ボタンでスマホに予定を保存・通知設定できます。</p>
           ${schedules.slice().sort((a:any, b:any) => a.startDate.localeCompare(b.startDate)).map((s:any) => {
             let displayTime = s.startDate.replace(/-/g, '/');
             if (s.startTime) displayTime += ` ${s.startTime}`;
@@ -461,17 +484,17 @@ async function render() {
             }
             
             let recurText = '';
-            if (s.recurrence === 'daily') recurText = ' <span style="background:#eaf2ee; color:#2c604f; padding:2px 6px; border-radius:4px; font-size:10px;">毎日</span>';
-            if (s.recurrence === 'weekly') recurText = ' <span style="background:#eaf2ee; color:#2c604f; padding:2px 6px; border-radius:4px; font-size:10px;">毎週</span>';
-            if (s.recurrence === 'monthly') recurText = ' <span style="background:#eaf2ee; color:#2c604f; padding:2px 6px; border-radius:4px; font-size:10px;">毎月</span>';
-            if (s.recurrence === 'yearly') recurText = ' <span style="background:#eaf2ee; color:#2c604f; padding:2px 6px; border-radius:4px; font-size:10px;">毎年</span>';
+            if (s.recurrence === 'daily') recurText = ' <span style="background:#fff0f3; color:#a76777; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:bold;">毎日</span>';
+            if (s.recurrence === 'weekly') recurText = ' <span style="background:#fff0f3; color:#a76777; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:bold;">毎週</span>';
+            if (s.recurrence === 'monthly') recurText = ' <span style="background:#fff0f3; color:#a76777; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:bold;">毎月</span>';
+            if (s.recurrence === 'yearly') recurText = ' <span style="background:#fff0f3; color:#a76777; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:bold;">毎年</span>';
 
             return `
             <div style="padding: 14px 0; border-bottom: 1px solid #f5e9ed;">
               <div style="display:flex; justify-content:space-between; align-items:flex-start;">
                 <div>
                   <b style="font-size: 16px; color:#e7617d;">${esc(s.title)}${recurText}</b>
-                  <div class="muted" style="font-weight:bold; margin-top:2px;">${displayTime}</div>
+                  <div class="muted" style="font-weight:bold; margin-top:4px;">${displayTime}</div>
                 </div>
                 <button class="del-sched ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:11px; border-radius:6px; background:transparent;">削除</button>
               </div>
@@ -509,7 +532,7 @@ async function render() {
           <input type="number" id="utilAmount" class="field" placeholder="金額を入力" style="margin-top: 10px;">
           <button id="addUtilBtn" class="dark full">追加する</button>
         </div>
-        <div class="card">
+        <div class="card history-scroll">
           <h2>履歴</h2>
           ${utils.slice().reverse().map((u:any) => `<div style="display:flex; justify-content:space-between; align-items:center; padding: 12px 0; border-bottom:1px solid #f5e9ed;"><div><b style="font-size:15px; color:${u.type==='water'?'#5995bd':'#d88c5f'}">${u.type === 'water' ? '水道代' : '光熱費'}</b><div class="muted" style="font-size:12px; margin-top: 2px;">${u.month}</div></div><div style="text-align:right;"><b style="font-size: 16px;">${yen(u.amount)}</b><br><button class="del-util ghost" data-id="${u.id}" style="color:#bf4f68; padding:4px 10px; font-size:11px; margin-top:6px; border-radius:6px;">削除</button></div></div>`).join('') || '<p class="muted" style="text-align:center; padding:10px 0;">まだありません</p>'}
         </div>
@@ -568,6 +591,57 @@ async function render() {
   setTab(currentTab); 
 }
 
+function renderSchedCal() {
+  const container = q('#schedCalGrid');
+  if(!container) return;
+  const firstDay = new Date(schedCalYear, schedCalMonth, 1).getDay();
+  const lastDate = new Date(schedCalYear, schedCalMonth + 1, 0).getDate();
+
+  let html = '';
+  for(let i=0; i<firstDay; i++) html += `<div></div>`;
+  for(let d=1; d<=lastDate; d++) {
+    const dateStr = `${schedCalYear}-${String(schedCalMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const isSel = schedSelectedDates.includes(dateStr);
+    const bg = isSel ? '#ff8fa3' : '#fff';
+    const col = isSel ? '#fff' : '#3e3438';
+    const border = isSel ? '#ff8fa3' : '#f0dfe4';
+    const shadow = isSel ? '0 2px 6px rgba(255,143,163,0.4)' : 'none';
+    html += `<div class="cal-day" data-date="${dateStr}" style="background:${bg}; color:${col}; border:1px solid ${border}; box-shadow:${shadow}; padding:10px 0; text-align:center; border-radius:10px; cursor:pointer; font-weight:bold; transition:0.2s;">${d}</div>`;
+  }
+  container.innerHTML = html;
+
+  document.querySelectorAll('.cal-day').forEach((el: any) => {
+    el.onclick = () => {
+      const dt = el.dataset.date;
+      if (schedSelectedDates.includes(dt)) {
+        schedSelectedDates = schedSelectedDates.filter(x => x !== dt);
+      } else {
+        schedSelectedDates.push(dt);
+      }
+      renderSchedCal();
+    };
+  });
+  if(q('#schedCalMonthLabel')) q('#schedCalMonthLabel').textContent = `${schedCalYear}年 ${schedCalMonth+1}月`;
+}
+
+function renderSchedUI() {
+  if(q('#wrapMulti')) q('#wrapMulti').style.display = schedMode === 'multi' ? 'block' : 'none';
+  if(q('#wrapSpan')) q('#wrapSpan').style.display = schedMode === 'span' ? 'block' : 'none';
+  
+  const btnMulti = q('#btnModeMulti');
+  const btnSpan = q('#btnModeSpan');
+  if(btnMulti && btnSpan) {
+    if(schedMode === 'multi') {
+      btnMulti.className = 'sched-mode-btn active';
+      btnSpan.className = 'sched-mode-btn inactive';
+    } else {
+      btnMulti.className = 'sched-mode-btn inactive';
+      btnSpan.className = 'sched-mode-btn active';
+    }
+  }
+  if(schedMode === 'multi') renderSchedCal();
+}
+
 function calc() {
   let raw = val('#amount').replace(/,/g, '');
   if (!raw) return 0;
@@ -591,32 +665,51 @@ function wire(state: any) {
   q('#closeDrawerBtn')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
   
   document.querySelectorAll('[data-nav]').forEach((b: any) => {
-    b.onclick = () => setTab(b.dataset.nav);
+    b.onclick = () => { setTab(b.dataset.nav); if(b.dataset.nav === 'schedule') renderSchedUI(); };
   });
 
   document.querySelectorAll('[data-tab]').forEach((b: any) => {
-    b.onclick = () => setTab(b.dataset.tab);
+    b.onclick = () => { setTab(b.dataset.tab); if(b.dataset.tab === 'schedule') renderSchedUI(); };
   });
 
-  // スケジュール追加ボタン処理
+  // スケジュール画面のUI初期化とイベント
+  renderSchedUI();
+  q('#btnModeMulti')?.addEventListener('click', () => { schedMode = 'multi'; renderSchedUI(); });
+  q('#btnModeSpan')?.addEventListener('click', () => { schedMode = 'span'; renderSchedUI(); });
+  q('#calPrev')?.addEventListener('click', () => { schedCalMonth--; if(schedCalMonth<0){schedCalMonth=11;schedCalYear--;} renderSchedCal(); });
+  q('#calNext')?.addEventListener('click', () => { schedCalMonth++; if(schedCalMonth>11){schedCalMonth=0;schedCalYear++;} renderSchedCal(); });
+
   q('#addSchedBtn')?.addEventListener('click', () => {
     const title = val('#schedTitle').trim();
-    const startDate = val('#schedStartDate');
     const startTime = val('#schedStartTime');
-    let endDate = val('#schedEndDate') || startDate;
     const endTime = val('#schedEndTime');
-    const recurrence = val('#schedRecurrence');
-
-    if (!title || !startDate) return alert('予定と開始日を入力してください');
-    
-    // 終了日が開始日より前なら自動補正
-    if (endDate < startDate) endDate = startDate;
+    if (!title) return alert('予定を入力してください');
 
     const sched = JSON.parse(localStorage.getItem(`sched_${pair}`) || '[]');
-    sched.push({ id: Date.now().toString(), title, startDate, startTime, endDate, endTime, recurrence });
+
+    if (schedMode === 'multi') {
+      if (schedSelectedDates.length === 0) return alert('カレンダーから日付を選択してください');
+      schedSelectedDates.forEach(d => {
+        sched.push({
+          id: Date.now().toString() + Math.random(),
+          title, startDate: d, endDate: d, startTime, endTime, recurrence: 'none'
+        });
+      });
+      schedSelectedDates = []; // リセット
+    } else {
+      const startDate = val('#schedStartDate');
+      let endDate = val('#schedEndDate') || startDate;
+      const recurrence = val('#schedRecurrence');
+      if (!startDate) return alert('開始日を入力してください');
+      if (endDate < startDate) endDate = startDate;
+      sched.push({
+        id: Date.now().toString(),
+        title, startDate, endDate, startTime, endTime, recurrence
+      });
+    }
+
     localStorage.setItem(`sched_${pair}`, JSON.stringify(sched));
-    
-    alert('リストに登録しました！\n下の「カレンダーに追加」ボタンを押してスマホにも登録してください。');
+    alert('リストに登録しました！\n下の「🍎 / 🇬」ボタンを押してスマホのカレンダーにも連携してください。');
     render();
   });
 
