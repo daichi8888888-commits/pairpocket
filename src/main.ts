@@ -82,7 +82,7 @@ async function boot() {
   if (!session) return authView();
   uid = session.user.id;
 
-  // ★ 爆速表示のためのキャッシュ読み込み ★
+  // ★ 爆速表示のためのキャッシュ読み込み
   const cached = localStorage.getItem('pp_cache');
   if (cached) {
     try {
@@ -144,7 +144,7 @@ async function load() {
   balances = b.data || [];
   settlements = s.data || [];
 
-  // ★ 次回の爆速起動のために最新データを保存 ★
+  // 次回の爆速起動のために最新データを保存
   localStorage.setItem('pp_cache', JSON.stringify({ uid, pair, members, expenses, balances, settlements }));
 }
 
@@ -166,13 +166,11 @@ function setTab(tab: string) {
 }
 
 async function render(isInitial = false) {
-  // すでに入力中のテキストがあれば保持
   const currentAmt = val('#amount');
   const currentTitle = val('#title');
 
   let pairName = 'ふたりの家計';
   let inviteCode = '';
-  // ネットワーク通信を待たずに描画するため、キャッシュがない時は名前を省略
   if (!isInitial) {
     const { data: p } = await supabase.from('pairs').select('name,invite_code').eq('id', pair).single();
     if (p) { pairName = p.name; inviteCode = p.invite_code; }
@@ -583,25 +581,6 @@ async function render(isInitial = false) {
           <div class="big" style="color: #e7617d;">${esc(p?.invite_code)}</div><p class="muted">${members.length}/2人</p>
         </div>
         <div class="card">
-          <h2>サブスク・定額の管理</h2>
-          <p class="muted" style="font-size:12px; margin-top:0;">登録しておくと、金額追加画面でワンタップで入力できます。</p>
-          <div id="subsList" style="margin-bottom: 12px;">
-            ${subs.map((s:any) => `<div style="display:flex; justify-content:space-between; align-items:center; padding: 10px 0; border-bottom:1px solid #f5e9ed;"><div><b style="font-size:14px;">${esc(s.title)}</b><br><span class="muted" style="font-size:12px;">${yen(s.amount)} (毎月${s.date ? s.date + '日' : '-'} / 支払: ${esc(name(s.payer_id))})</span></div><button class="del-sub ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:12px; border-radius: 8px;">削除</button></div>`).join('') || '<p class="muted" style="text-align:center; padding: 10px 0;">登録されていません</p>'}
-          </div>
-          <div style="background: #fffafb; padding: 12px; border-radius: 12px; border: 1px solid #f0dfe4;">
-            <label class="muted" style="font-size:12px;">新しいサブスクを登録</label>
-            <div style="display:flex; gap:6px; margin-top:4px;">
-              <input id="subTitle" class="field" placeholder="名前" style="margin:0; flex:1;">
-              <input id="subAmount" type="number" class="field" placeholder="金額" style="margin:0; width:90px;">
-              <input id="subDate" type="number" class="field" placeholder="日" min="1" max="31" style="margin:0; width:60px;">
-            </div>
-            <select id="subPayer" class="field" style="margin:8px 0 0 0;">
-              ${members.map((m) => `<option value="${m.user_id}" ${m.user_id === uid ? 'selected' : ''}>${esc(name(m.user_id))}が支払う</option>`).join('')}
-            </select>
-            <button id="addSubBtn" class="dark full" style="margin-top:8px;">登録する</button>
-          </div>
-        </div>
-        <div class="card">
           <h2>プロフィール設定</h2>
           <div style="display:flex; gap:8px; margin-top:6px;">
             <input id="myName" class="field" style="margin:0;" value="${esc(myName)}" placeholder="あなたの名前">
@@ -657,7 +636,6 @@ async function render(isInitial = false) {
   setTab(currentTab); 
   showCalc();
 
-  // スマホで爆速起動時にすぐキーボードが開くようにする（入力タブの場合のみ）
   if (isInitial && currentTab === 'entry') {
     setTimeout(() => q('#amount')?.focus(), 100);
   }
@@ -774,13 +752,11 @@ function showCalc() {
 }
 
 function wire(state: any) {
-  // ★ 余白タップでメニューを閉じる
   q('#menuBtn')?.addEventListener('click', () => q('#menuDrawer').classList.remove('hide'));
   q('#closeDrawerBtn')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
   q('#menuDrawer')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
   q('#menuContent')?.addEventListener('click', (e: Event) => e.stopPropagation());
 
-  // タブ遷移
   document.querySelectorAll('[data-nav]').forEach((b: any) => {
     b.onclick = () => { setTab(b.dataset.nav); if(b.dataset.nav === 'schedule') renderSchedUI(); };
   });
@@ -788,7 +764,6 @@ function wire(state: any) {
     b.onclick = () => { setTab(b.dataset.tab); if(b.dataset.tab === 'schedule') renderSchedUI(); };
   });
 
-  // ★ スケジュール関連
   renderSchedUI();
   q('#btnModeMulti')?.addEventListener('click', () => { schedMode = 'multi'; renderSchedUI(); });
   q('#btnModeSpan')?.addEventListener('click', () => { schedMode = 'span'; renderSchedUI(); });
@@ -868,7 +843,7 @@ function wire(state: any) {
     };
   });
 
-  // ★ レシート読込
+  // ★ レシート読込処理（バージョンを最新の flash-latest に修正）
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
@@ -885,7 +860,7 @@ function wire(state: any) {
     reader.onload = async (ev) => {
       const base64 = (ev.target?.result as string).split(',')[1];
       try {
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
