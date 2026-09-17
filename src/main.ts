@@ -82,7 +82,6 @@ async function boot() {
   if (!session) return authView();
   uid = session.user.id;
 
-  // 爆速表示のためのキャッシュ読み込み
   const cached = localStorage.getItem('pp_cache');
   if (cached) {
     try {
@@ -95,7 +94,6 @@ async function boot() {
     } catch {}
   }
 
-  // 裏側で最新データをサーバーから取得
   const { data, error } = await supabase.from('pair_members').select('pair_id').eq('user_id', uid).maybeSingle();
   if (error) return fail(error.message);
   if (!data) return pairView();
@@ -831,7 +829,7 @@ function wire(state: any) {
     };
   });
 
-  // ★ レシート読込処理（正しいモデル名に戻し、画像形式の指定も完璧にしました）
+  // ★ レシート読込機能：安定版の gemini-1.5-pro に変更し、設定もシンプル化
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
@@ -848,15 +846,15 @@ function wire(state: any) {
     reader.onload = async (ev) => {
       const base64 = (ev.target?.result as string).split(',')[1];
       try {
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+        // ★ 確実な gemini-1.5-pro モデルに変更
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             contents: [{ parts: [
                 { text: "このレシート画像の品目と金額を読み取り、以下のJSON配列の形式で出力してください。小計、消費税、合計などの行は除外して、純粋な商品のみを抽出してください。JSON以外のテキストは一切含めないでください。\n[{\"name\": \"商品名\", \"price\": 100}]" },
                 { inlineData: { mimeType: file.type || 'image/jpeg', data: base64 } }
-              ] }],
-            generationConfig: { responseMimeType: "application/json" }
+              ] }]
           })
         });
         
