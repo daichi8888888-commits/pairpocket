@@ -7,7 +7,6 @@ let currentMonth = 'all';
 let utilViewMode: 'trend' | 'average' = 'trend'; 
 let currentTab = 'entry'; 
 
-// スケジュールUI用の状態
 let schedMode: 'multi' | 'span' = 'multi';
 let schedCalYear = new Date().getFullYear();
 let schedCalMonth = new Date().getMonth();
@@ -29,7 +28,7 @@ const fmtTime = (raw: string) => {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
-// 🍎 Appleカレンダー用 (.ics) - 時間・複数日・繰り返し対応
+// 🍎 Appleカレンダー用 (.ics) - 【重要】UIDを追加して重複登録を防止！
 const getIcsUrl = (s: any) => {
   const startD = s.startDate.replace(/-/g, '');
   const endD = s.endDate.replace(/-/g, '');
@@ -51,11 +50,12 @@ const getIcsUrl = (s: any) => {
   let rrule = '';
   if (s.recurrence && s.recurrence !== 'none') rrule = `\nRRULE:FREQ=${s.recurrence.toUpperCase()}`;
   
-  const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\n${dtStart}\n${dtEnd}\nSUMMARY:${s.title}${rrule}\nEND:VEVENT\nEND:VCALENDAR`;
+  // UIDを持たせることで、何度インポートしても「上書き」になり重複しなくなります
+  const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//PairPocket//JP\nBEGIN:VEVENT\nUID:${s.id}@pairpocket.app\n${dtStart}\n${dtEnd}\nSUMMARY:${s.title}${rrule}\nEND:VEVENT\nEND:VCALENDAR`;
   return `data:text/calendar;charset=utf8,${encodeURIComponent(ics)}`;
 };
 
-// 🇬 Googleカレンダー用 - 時間・複数日・繰り返し対応
+// 🇬 Googleカレンダー用
 const getGoogleCalUrl = (s: any) => {
   const startD = s.startDate.replace(/-/g, '');
   const endD = s.endDate.replace(/-/g, '');
@@ -273,7 +273,8 @@ async function render() {
       let delName = '';
       if (isDel) {
         const parts = e.title.replace('[削除済] ', '').split('::');
-        delName = name(parts[0]); displayTitle = parts.slice(1).join('::');
+        delName = name(parts[0]); 
+        displayTitle = parts.slice(1).join('::');
       }
 
       timelineHtml += `<div class="expense ${isDel ? 'deleted-log' : ''}">
@@ -287,7 +288,9 @@ async function render() {
         <div class="expense-right">
           ${isDel ? `<del style="color:#b5a6ac;"><b>${yen(e.amount)}</b></del>` : `<b>${yen(e.amount)}</b>`}
           <div style="margin-top: 6px;">
-            ${!isDel ? `<button class="del ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #bf4f68; border-radius: 8px;">削除</button>` : `<button class="restore ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #765d8b; border-radius: 8px;">戻す</button>`}
+            ${!isDel 
+              ? `<button class="del ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #bf4f68; border-radius: 8px;">削除</button>` 
+              : `<button class="restore ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #765d8b; border-radius: 8px;">戻す</button>`}
           </div>
         </div>
       </div>`;
@@ -471,8 +474,12 @@ async function render() {
         </div>
 
         <div class="card history-scroll">
-          <h2>今後の予定</h2>
-          <p class="muted" style="margin-top:0;">カレンダーに登録ボタンでスマホに予定を保存・通知設定できます。</p>
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h2 style="margin: 0;">今後の予定</h2>
+            <!-- ★すべての予定を一括で書き出すボタン -->
+            <button id="exportAllSchedBtn" class="ghost" style="padding: 6px 12px; font-size: 12px; font-weight: bold; border-radius: 8px;">📥 すべて書き出す</button>
+          </div>
+          <p class="muted" style="margin-top:8px;">「すべて書き出す」で、スマホのカレンダーに一括で登録できます（重複しません）。</p>
           ${schedules.slice().sort((a:any, b:any) => a.startDate.localeCompare(b.startDate)).map((s:any) => {
             let displayTime = s.startDate.replace(/-/g, '/');
             if (s.startTime) displayTime += ` ${s.startTime}`;
@@ -497,10 +504,6 @@ async function render() {
                   <div class="muted" style="font-weight:bold; margin-top:4px;">${displayTime}</div>
                 </div>
                 <button class="del-sched ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:11px; border-radius:6px; background:transparent;">削除</button>
-              </div>
-              <div style="display:flex; gap: 8px; margin-top: 12px;">
-                <a href="${getIcsUrl(s)}" download="${s.title}.ics" style="flex:1; text-align:center; background:#f0dfe4; color:#59464e; padding:8px 0; border-radius:8px; font-size:12px; font-weight:bold; text-decoration:none;">🍎 Appleに追加</a>
-                <a href="${getGoogleCalUrl(s)}" target="_blank" style="flex:1; text-align:center; background:#f0dfe4; color:#59464e; padding:8px 0; border-radius:8px; font-size:12px; font-weight:bold; text-decoration:none;">🇬 Googleに追加</a>
               </div>
             </div>
           `}).join('') || '<p class="muted" style="text-align:center; padding:10px 0;">まだ予定はありません</p>'}
@@ -672,7 +675,6 @@ function wire(state: any) {
     b.onclick = () => { setTab(b.dataset.tab); if(b.dataset.tab === 'schedule') renderSchedUI(); };
   });
 
-  // スケジュール画面のUI初期化とイベント
   renderSchedUI();
   q('#btnModeMulti')?.addEventListener('click', () => { schedMode = 'multi'; renderSchedUI(); });
   q('#btnModeSpan')?.addEventListener('click', () => { schedMode = 'span'; renderSchedUI(); });
@@ -695,7 +697,7 @@ function wire(state: any) {
           title, startDate: d, endDate: d, startTime, endTime, recurrence: 'none'
         });
       });
-      schedSelectedDates = []; // リセット
+      schedSelectedDates = []; 
     } else {
       const startDate = val('#schedStartDate');
       let endDate = val('#schedEndDate') || startDate;
@@ -709,8 +711,53 @@ function wire(state: any) {
     }
 
     localStorage.setItem(`sched_${pair}`, JSON.stringify(sched));
-    alert('リストに登録しました！\n下の「🍎 / 🇬」ボタンを押してスマホのカレンダーにも連携してください。');
+    alert('リストに登録しました！');
     render();
+  });
+
+  // ★ 【重要】全予定を一括で書き出す機能（UID付きで重複防止）
+  q('#exportAllSchedBtn')?.addEventListener('click', () => {
+    const scheds = JSON.parse(localStorage.getItem(`sched_${pair}`) || '[]');
+    if (scheds.length === 0) return alert('書き出す予定がありません');
+
+    let ics = 'BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//PairPocket//JP\n';
+
+    scheds.forEach((s: any) => {
+      const startD = s.startDate.replace(/-/g, '');
+      const endD = s.endDate.replace(/-/g, '');
+      let dtStart, dtEnd;
+
+      if (s.startTime || s.endTime) {
+        const st = s.startTime ? s.startTime.replace(':', '') + '00' : '000000';
+        const et = s.endTime ? s.endTime.replace(':', '') + '00' : '235900';
+        dtStart = `DTSTART;TZID=Asia/Tokyo:${startD}T${st}`;
+        dtEnd = `DTEND;TZID=Asia/Tokyo:${endD}T${et}`;
+      } else {
+        const d = new Date(s.endDate);
+        d.setDate(d.getDate() + 1);
+        const endDPlus1 = d.toISOString().slice(0,10).replace(/-/g, '');
+        dtStart = `DTSTART;VALUE=DATE:${startD}`;
+        dtEnd = `DTEND;VALUE=DATE:${endDPlus1}`;
+      }
+
+      let rrule = '';
+      if (s.recurrence && s.recurrence !== 'none') rrule = `\nRRULE:FREQ=${s.recurrence.toUpperCase()}`;
+      
+      // UIDを追加することで、何度インポートしても「同じ予定の上書き」として処理されます
+      ics += `BEGIN:VEVENT\nUID:${s.id}@pairpocket.app\n${dtStart}\n${dtEnd}\nSUMMARY:${s.title}${rrule}\nEND:VEVENT\n`;
+    });
+
+    ics += 'END:VCALENDAR';
+
+    const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'PairPocket_Schedules.ics';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   });
 
   document.querySelectorAll('.del-sched').forEach((b: any) => {
