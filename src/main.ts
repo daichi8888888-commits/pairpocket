@@ -53,6 +53,48 @@ function showToast(msg: string, isError = false) {
   }, 2500);
 }
 
+// ★ サブスク自動追加機能
+async function processAutoSubs() {
+  const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
+  let addedNames = [];
+  const d = new Date();
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  const todayStr = d.toISOString().slice(0, 10); 
+  const currentYM = todayStr.slice(0, 7); 
+  const currentDay = parseInt(todayStr.slice(8, 10), 10);
+  const lastDayOfMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+
+  for (let s of subs) {
+    if (!s.date) continue; // 日付指定がないものはスキップ
+    const subDay = parseInt(s.date, 10);
+    const targetDay = Math.min(subDay, lastDayOfMonth); // 31日指定で30日しかない月への対応
+
+    // 今月の指定日を過ぎていて、かつ今月まだ追加されていなければ追加する
+    if (currentDay >= targetDay && s.lastProcessedMonth !== currentYM) {
+      const { error } = await supabase.rpc('add_shared_expense', {
+        input_pair_id: pair, 
+        input_title: `🔄 ${s.title}`, 
+        input_amount: Number(s.amount), 
+        input_payer_id: s.payer_id, 
+        input_category: 'その他',
+        input_expense_date: `${currentYM}-${String(targetDay).padStart(2, '0')}`,
+        input_memo: null
+      });
+      if (!error) {
+        s.lastProcessedMonth = currentYM;
+        addedNames.push(s.title);
+      }
+    }
+  }
+  
+  // 更新があれば保存してリロード
+  if (addedNames.length > 0) {
+    localStorage.setItem(`subs_${pair}`, JSON.stringify(subs));
+    await load();
+    setTimeout(() => showToast(`🔄 自動追加: ${addedNames.join(', ')}`), 800);
+  }
+}
+
 // 爆速起動のためのキャッシュ展開
 const initCache = () => {
   const cached = localStorage.getItem('pp_cache');
@@ -80,6 +122,7 @@ async function boot() {
   
   pair = data.pair_id;
   await load();
+  await processAutoSubs(); // ★ ここで自動追加を判定・実行
   render(false); 
 }
 
@@ -259,12 +302,8 @@ async function render(isInitial = false) {
       const e = item.data;
       const isDel = typeof e.title === 'string' && e.title.startsWith('[削除済]');
       
-      // ★ 編集履歴の表示処理
       let editInfoHtml = '';
       if (!isDel && e.updated_at && e.created_at && new Date(e.updated_at).getTime() - new Date(e.created_at).getTime() > 1000) {
-        // updated_at が存在し、かつ created_at より新しい場合は編集されたとみなす
-        // updated_by カラムがない場合は自分が編集したか不明なため、とりあえず名前を出さないか、最新の取得情報から推測するかになりますが、
-        // ここでは簡単に「編集済み」と日付だけ出す形にします。（誰が、を正確に出すにはDBにupdated_byカラムが必要です）
         const updatedDate = new Date(e.updated_at);
         const updStr = `${updatedDate.getFullYear()}/${String(updatedDate.getMonth() + 1).padStart(2, '0')}/${String(updatedDate.getDate()).padStart(2, '0')}`;
         editInfoHtml = `<div style="font-size: 10px; color: #b5a6ac; margin-top: 2px;">✏️ 編集済 (${updStr})</div>`;
@@ -383,7 +422,7 @@ async function render(isInitial = false) {
         <div class="card hero" style="padding: 24px; text-align: center; margin-top: 20px;">
           <div class="muted" style="margin-bottom: 12px;">現在の精算</div>
           ${members.length < 2 ? '<h2>相手の参加待ち</h2>' : amount < 1 ? '<div class="big" style="font-size: 28px; margin: 15px 0;">ぴったり ✓</div>' : `
-            <h2 style="font-size: 22px; margin-bottom: 10px;">${esc(name(sender))} → ${esc(name(receiver))}</h2>
+            <h2 style="font-size: 22px; margin-bottom: 10px;">${esc(name(sender))} →${esc(name(receiver))}</h2>
             <div class="big" style="margin-bottom: 20px;">${yen(amount)}</div>
             <div style="border-top: 1px solid rgba(255,255,255,0.3); padding-top: 20px; text-align: left;">
               <label style="font-size: 12px; color: rgba(255,255,255,0.8);">今回精算する金額</label>
@@ -548,7 +587,7 @@ async function render(isInitial = false) {
 
         <div class="card">
           <h2>サブスク・定額の管理</h2>
-          <p class="muted" style="font-size:12px; margin-top:0;">登録しておくと、金額追加画面でワンタップで入力できます。</p>
+          <p class="muted" style="font-size:12px; margin-top:0;">登録しておくと指定日に自動追加されます。</p>
           <div id="subsList" style="margin-bottom: 12px;">
             ${subs.map((s:any) => `<div style="display:flex; justify-content:space-between; align-items:center; padding: 10px 0; border-bottom:1px solid #f5e9ed;"><div><b style="font-size:14px;">${esc(s.title)}</b><br><span class="muted" style="font-size:12px;">${yen(s.amount)} (毎月${s.date ? s.date + '日' : '-'} / 支払: ${esc(name(s.payer_id))})</span></div><button class="del-sub ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:12px; border-radius: 8px;">削除</button></div>`).join('') || '<p class="muted" style="text-align:center; padding: 10px 0;">登録されていません</p>'}
           </div>
@@ -581,7 +620,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 9.0.0<br>（編集履歴 表示対応）
+          App Version: 10.0.0<br>（自動追加機能 搭載版）
         </div>
       </section>
 
@@ -592,7 +631,7 @@ async function render(isInitial = false) {
         <button data-tab="settings">設定</button>
       </nav>
 
-      <!-- ★ 編集モーダル -->
+      <!-- 編集モーダル -->
       <div id="editModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
         <div class="card" style="width: 100%; max-width: 400px; max-height: 85vh; display: flex; flex-direction: column; overflow-y: auto;">
           <h2 style="margin-top: 0; font-size: 20px;">支出を編集</h2>
@@ -1044,7 +1083,6 @@ function wire(state: any) {
     document.querySelectorAll('[data-payer]').forEach((x: any) => x.classList.remove('selected')); b.classList.add('selected');
   });
 
-  // ★ 履歴の編集・削除
   document.querySelectorAll('.edit').forEach((b: any) => b.onclick = () => {
     const id = b.dataset.id;
     const e = expenses.find(x => x.id === id);
@@ -1080,7 +1118,7 @@ function wire(state: any) {
       category: cat,
       expense_date: date,
       payer_id: payer,
-      updated_at: new Date().toISOString() // ★ 更新日時を記録
+      updated_at: new Date().toISOString()
     }).eq('id', id);
 
     if (error) return alert('更新に失敗しました。\n' + error.message);
