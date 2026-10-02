@@ -14,6 +14,13 @@ let schedCalMonth = new Date().getMonth();
 let schedSelectedDates: string[] = [];
 let receiptState: { name: string, price: number, split: 'mine' | 'half' | 'partner' }[] = [];
 
+// ミニゲーム用
+let miniGameMode: 'react' | 'bomb' = 'react';
+let reactScoreP1 = 0, reactScoreP2 = 0;
+let reactGameState: 'idle' | 'waiting' | 'ready' = 'idle';
+let reactTimer: any = null;
+let bombTiles: { hasBomb: boolean; opened: boolean }[] = [];
+
 const getToday = () => {
   const d = new Date();
   d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
@@ -53,7 +60,7 @@ function showToast(msg: string, isError = false) {
   }, 2500);
 }
 
-// ★ サブスク自動追加機能
+// ★ サブスク自動追加機能の強化（日付が来たら確実に発動）
 async function processAutoSubs() {
   const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
   let addedNames = [];
@@ -65,20 +72,19 @@ async function processAutoSubs() {
   const lastDayOfMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
 
   for (let s of subs) {
-    if (!s.date) continue; // 日付指定がないものはスキップ
+    if (!s.date) continue;
     const subDay = parseInt(s.date, 10);
-    const targetDay = Math.min(subDay, lastDayOfMonth); // 31日指定で30日しかない月への対応
+    const targetDay = Math.min(subDay, lastDayOfMonth);
 
-    // 今月の指定日を過ぎていて、かつ今月まだ追加されていなければ追加する
     if (currentDay >= targetDay && s.lastProcessedMonth !== currentYM) {
       const { error } = await supabase.rpc('add_shared_expense', {
         input_pair_id: pair, 
         input_title: `🔄 ${s.title}`, 
         input_amount: Number(s.amount), 
         input_payer_id: s.payer_id, 
-        input_category: 'その他',
+        input_category: '生活',
         input_expense_date: `${currentYM}-${String(targetDay).padStart(2, '0')}`,
-        input_memo: null
+        input_memo: '自動追加'
       });
       if (!error) {
         s.lastProcessedMonth = currentYM;
@@ -87,15 +93,54 @@ async function processAutoSubs() {
     }
   }
   
-  // 更新があれば保存してリロード
   if (addedNames.length > 0) {
     localStorage.setItem(`subs_${pair}`, JSON.stringify(subs));
     await load();
     setTimeout(() => showToast(`🔄 自動追加: ${addedNames.join(', ')}`), 800);
+    render(false);
   }
 }
 
-// 爆速起動のためのキャッシュ展開
+// ★ リアルタイム同期機能（相手の入力を5秒ごとにこっそり検知）
+async function backgroundSync() {
+  if (!pair || document.visibilityState !== 'visible') return;
+  const oldExpLen = expenses.length;
+  const oldSetLen = settlements.length;
+  
+  const [e, s] = await Promise.all([
+    supabase.from('expenses').select('id').eq('pair_id', pair),
+    supabase.from('settlements').select('id').eq('pair_id', pair)
+  ]);
+  
+  const newExpLen = e.data?.length || 0;
+  const newSetLen = s.data?.length || 0;
+  
+  // 相手がデータを追加/削除した時だけ画面を更新する
+  if (oldExpLen !== newExpLen || oldSetLen !== newSetLen) {
+    await load();
+    // 入力中に画面がリフレッシュされるのを防ぐため、入力中以外のみ描画
+    const activeTags = ['INPUT', 'TEXTAREA', 'SELECT'];
+    const isTyping = activeTags.includes(document.activeElement?.tagName || '');
+    if (!isTyping || currentTab !== 'entry') {
+       render(false);
+       showToast('🔄 パートナーの更新を同期しました');
+    }
+  }
+}
+
+// 定期チェック ＆ 画面に戻ってきた瞬間のチェック
+setInterval(backgroundSync, 5000);
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && pair) {
+    await load();
+    await processAutoSubs();
+    const activeTags = ['INPUT', 'TEXTAREA', 'SELECT'];
+    if (!activeTags.includes(document.activeElement?.tagName || '')) {
+      render(false);
+    }
+  }
+});
+
 const initCache = () => {
   const cached = localStorage.getItem('pp_cache');
   if (cached) {
@@ -122,7 +167,7 @@ async function boot() {
   
   pair = data.pair_id;
   await load();
-  await processAutoSubs(); // ★ ここで自動追加を判定・実行
+  await processAutoSubs();
   render(false); 
 }
 
@@ -168,7 +213,7 @@ async function load() {
 
 function setTab(tab: string) {
   currentTab = tab;
-  ['entry', 'home', 'history', 'settings', 'utilities', 'schedule'].forEach(x => {
+  ['entry', 'home', 'history', 'settings', 'utilities', 'schedule', 'minigame'].forEach(x => {
     const el = q('#sec-' + x);
     if (el) el.style.display = (x === tab) ? 'block' : 'none';
   });
@@ -356,6 +401,7 @@ async function render(isInitial = false) {
           <button id="closeDrawerBtn" class="ghost" style="position: absolute; top: max(20px, env(safe-area-inset-top)); right: 20px; border-radius: 50%; width: 40px; height: 40px; padding: 0; display:flex; align-items:center; justify-content:center; font-size: 20px;">×</button>
           <div style="margin-top: calc(max(20px, env(safe-area-inset-top)) + 50px);">
             <div class="muted" style="margin-bottom: 10px; font-weight: bold;">便利機能</div>
+            <button data-nav="minigame" class="ghost full" style="margin-bottom: 12px; text-align: left; font-size: 16px; padding: 16px; background:#fff0f3; color:#a76777; font-weight:bold;"><span style="font-size: 20px; margin-right: 8px;">🎮</span> 待ち時間ミニゲーム</button>
             <button data-nav="schedule" class="ghost full" style="margin-bottom: 12px; text-align: left; font-size: 16px; padding: 16px;"><span style="font-size: 20px; margin-right: 8px;">📅</span> ふたりの予定</button>
             <button data-nav="utilities" class="ghost full" style="margin-bottom: 12px; text-align: left; font-size: 16px; padding: 16px;"><span style="font-size: 20px; margin-right: 8px;">💧</span> 水道・光熱費</button>
           </div>
@@ -422,7 +468,7 @@ async function render(isInitial = false) {
         <div class="card hero" style="padding: 24px; text-align: center; margin-top: 20px;">
           <div class="muted" style="margin-bottom: 12px;">現在の精算</div>
           ${members.length < 2 ? '<h2>相手の参加待ち</h2>' : amount < 1 ? '<div class="big" style="font-size: 28px; margin: 15px 0;">ぴったり ✓</div>' : `
-            <h2 style="font-size: 22px; margin-bottom: 10px;">${esc(name(sender))} →${esc(name(receiver))}</h2>
+            <h2 style="font-size: 22px; margin-bottom: 10px;">${esc(name(sender))} → ${esc(name(receiver))}</h2>
             <div class="big" style="margin-bottom: 20px;">${yen(amount)}</div>
             <div style="border-top: 1px solid rgba(255,255,255,0.3); padding-top: 20px; text-align: left;">
               <label style="font-size: 12px; color: rgba(255,255,255,0.8);">今回精算する金額</label>
@@ -453,6 +499,38 @@ async function render(isInitial = false) {
         </div>
       </section>
 
+      <!-- ミニゲームタブ -->
+      <section id="sec-minigame" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
+          <h2 style="margin: 0; font-size: 18px;">🎮 ふたりで待ち時間対戦</h2>
+        </div>
+        
+        <div style="display: flex; gap: 8px; margin-bottom: 15px;">
+          <button id="btnGameReact" class="sched-mode-btn active">⚡ 反射神経バトル</button>
+          <button id="btnGameBomb" class="sched-mode-btn inactive">💣 爆弾ルーレット</button>
+        </div>
+
+        <div id="wrapGameReact" class="card" style="padding: 12px; text-align: center;">
+          <div style="display:flex; justify-content:space-around; margin-bottom:12px; font-weight:bold; font-size:15px;">
+            <span style="color:#5995bd;">相手: <span id="reactScoreP2" style="font-size:20px;">0</span> 点</span>
+            <span style="color:#e7617d;">あなた: <span id="reactScoreP1" style="font-size:20px;">0</span> 点</span>
+          </div>
+          <div style="display:flex; flex-direction:column; height:340px; border-radius:16px; overflow:hidden; border:2px solid #f0dfe4; position:relative;">
+            <button id="reactBtnP2" style="flex:1; border:none; background:#f0f4f8; font-size:18px; font-weight:bold; color:#5995bd; transform:rotate(180deg); display:flex; align-items:center; justify-content:center; cursor:pointer; user-select:none;">タップしてね (3点先取)</button>
+            <div id="reactStatus" style="height:44px; background:#3e3438; color:#fff; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:bold; letter-spacing:1px;">スタートを押してね</div>
+            <button id="reactBtnP1" style="flex:1; border:none; background:#fff0f3; font-size:18px; font-weight:bold; color:#e7617d; display:flex; align-items:center; justify-content:center; cursor:pointer; user-select:none;">タップしてね (3点先取)</button>
+          </div>
+          <button id="reactStartBtn" class="primary full" style="margin-top:14px; padding:12px; font-size:16px;">対戦スタート！</button>
+        </div>
+
+        <div id="wrapGameBomb" class="card hide" style="text-align:center; padding: 20px 15px;">
+          <div id="bombMsg" style="font-weight:bold; color:#a76777; margin-bottom:15px; font-size:16px;">交互にタップ！ハズレ(💣)で負け！</div>
+          <div id="bombGrid" style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; margin-bottom:20px;"></div>
+          <button id="bombResetBtn" class="dark full" style="padding:12px;">新しく始める</button>
+        </div>
+      </section>
+
+      <!-- スケジュールタブ -->
       <section id="sec-schedule">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
           <h2 style="margin: 0; font-size: 18px;">📅 ふたりの予定</h2>
@@ -548,6 +626,7 @@ async function render(isInitial = false) {
         </div>
       </section>
 
+      <!-- 水道光熱費タブ -->
       <section id="sec-utilities">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
           <button id="closeUtils" class="ghost" style="padding: 10px 14px; visibility: hidden;">戻る</button>
@@ -620,7 +699,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 10.0.0<br>（自動追加機能 搭載版）
+          App Version: 12.0.0<br>（完全リアルタイム同期＆サブスク強化版）
         </div>
       </section>
 
@@ -756,6 +835,37 @@ function renderSchedUI() {
   if(schedMode === 'multi') renderSchedCal();
 }
 
+function initBombGame() {
+  const bombIndex = Math.floor(Math.random() * 9);
+  bombTiles = Array(9).fill(null).map((_, i) => ({ hasBomb: i === bombIndex, opened: false }));
+  renderBombGame();
+}
+
+function renderBombGame() {
+  const grid = q('#bombGrid');
+  if (!grid) return;
+  grid.innerHTML = bombTiles.map((t, i) => `
+    <button class="bomb-tile" data-idx="${i}" style="height:70px; border-radius:12px; border:2px solid #f0dfe4; background:${t.opened ? (t.hasBomb ? '#bf4f68' : '#e8f5e9') : '#fff'}; font-size:24px; cursor:pointer; display:flex; align-items:center; justify-content:center;">
+      ${t.opened ? (t.hasBomb ? '💣' : '⚪️') : '🎁'}
+    </button>
+  `).join('');
+
+  document.querySelectorAll('.bomb-tile').forEach((b: any) => {
+    b.onclick = () => {
+      const idx = Number(b.dataset.idx);
+      if (bombTiles[idx].opened) return;
+      bombTiles[idx].opened = true;
+      if (bombTiles[idx].hasBomb) {
+        q('#bombMsg').innerHTML = '💥 <b style="color:#bf4f68;">ドカン！！爆発した人の負け！</b>';
+        bombTiles.forEach(tile => tile.opened = true);
+      } else {
+        q('#bombMsg').textContent = 'セーフ！次の人にスマホを渡してね';
+      }
+      renderBombGame();
+    };
+  });
+}
+
 function renderReceiptItems() {
   q('#receiptLoading').style.display = 'none';
   q('#receiptItemsWrap').style.display = 'block';
@@ -822,11 +932,87 @@ function wire(state: any) {
   q('#menuContent')?.addEventListener('click', (e: Event) => e.stopPropagation());
 
   document.querySelectorAll('[data-nav]').forEach((b: any) => {
-    b.onclick = () => { setTab(b.dataset.nav); if(b.dataset.nav === 'schedule') renderSchedUI(); };
+    b.onclick = () => { 
+      setTab(b.dataset.nav); 
+      if(b.dataset.nav === 'schedule') renderSchedUI(); 
+      if(b.dataset.nav === 'minigame') initBombGame();
+    };
   });
   document.querySelectorAll('[data-tab]').forEach((b: any) => {
-    b.onclick = () => { setTab(b.dataset.tab); if(b.dataset.tab === 'schedule') renderSchedUI(); };
+    b.onclick = () => { setTab(b.dataset.tab); };
   });
+
+  q('#btnGameReact')?.addEventListener('click', () => {
+    q('#wrapGameReact').style.display = 'block';
+    q('#wrapGameBomb').style.display = 'none';
+    q('#btnGameReact').className = 'sched-mode-btn active';
+    q('#btnGameBomb').className = 'sched-mode-btn inactive';
+  });
+  q('#btnGameBomb')?.addEventListener('click', () => {
+    q('#wrapGameReact').style.display = 'none';
+    q('#wrapGameBomb').style.display = 'block';
+    q('#btnGameReact').className = 'sched-mode-btn inactive';
+    q('#btnGameBomb').className = 'sched-mode-btn active';
+    initBombGame();
+  });
+  q('#bombResetBtn')?.addEventListener('click', () => {
+    q('#bombMsg').textContent = '交互にタップ！ハズレ(💣)で負け！';
+    initBombGame();
+  });
+
+  const nextReactRound = () => {
+    reactGameState = 'waiting';
+    q('#reactStatus').textContent = '待て… (赤)';
+    q('#reactStatus').style.background = '#e7617d';
+    q('#reactBtnP1').style.background = '#ffe5e9';
+    q('#reactBtnP2').style.background = '#ffe5e9';
+
+    const delay = 1500 + Math.random() * 3000;
+    reactTimer = setTimeout(() => {
+      reactGameState = 'ready';
+      q('#reactStatus').textContent = '今だ！！ (緑)';
+      q('#reactStatus').style.background = '#4caf50';
+      q('#reactBtnP1').style.background = '#e8f5e9';
+      q('#reactBtnP2').style.background = '#e8f5e9';
+    }, delay);
+  };
+
+  const handleReactTap = (player: 'P1' | 'P2') => {
+    if (reactGameState === 'idle') return;
+    if (reactGameState === 'waiting') {
+      clearTimeout(reactTimer);
+      reactGameState = 'idle';
+      const winner = player === 'P1' ? '相手' : 'あなた';
+      q('#reactStatus').textContent = `フライング！ ${winner}に1点！`;
+      if (player === 'P1') reactScoreP2++; else reactScoreP1++;
+    } else if (reactGameState === 'ready') {
+      reactGameState = 'idle';
+      const winner = player === 'P1' ? 'あなた' : '相手';
+      q('#reactStatus').textContent = `${winner}の勝ち！`;
+      if (player === 'P1') reactScoreP1++; else reactScoreP2++;
+    }
+    q('#reactScoreP1').textContent = String(reactScoreP1);
+    q('#reactScoreP2').textContent = String(reactScoreP2);
+
+    if (reactScoreP1 >= 3 || reactScoreP2 >= 3) {
+      const champ = reactScoreP1 >= 3 ? 'あなた' : '相手';
+      q('#reactStatus').textContent = `🏆 ${champ}の完全勝利！！`;
+      q('#reactStartBtn').textContent = 'もう一回遊ぶ';
+    } else {
+      setTimeout(nextReactRound, 1500);
+    }
+  };
+
+  q('#reactStartBtn')?.addEventListener('click', () => {
+    reactScoreP1 = 0; reactScoreP2 = 0;
+    q('#reactScoreP1').textContent = '0';
+    q('#reactScoreP2').textContent = '0';
+    q('#reactStartBtn').textContent = '対戦中...';
+    nextReactRound();
+  });
+
+  q('#reactBtnP1')?.addEventListener('click', () => handleReactTap('P1'));
+  q('#reactBtnP2')?.addEventListener('click', () => handleReactTap('P2'));
 
   renderSchedUI();
   q('#btnModeMulti')?.addEventListener('click', () => { schedMode = 'multi'; renderSchedUI(); });
@@ -1034,7 +1220,7 @@ function wire(state: any) {
 
   q('#addSubBtn')?.addEventListener('click', () => {
     const title = val('#subTitle').trim(); const amount = Number(val('#subAmount')); const date = val('#subDate'); const payer = val('#subPayer');
-    if (!title || !amount) { showToast('⚠️ 名前と金額を正しく入力してください', true); return; }
+    if (!title || !amount || !date) { showToast('⚠️ 名前、金額、日付を入力してください', true); return; }
     const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
     subs.push({ id: Date.now().toString(), title, amount, date, payer_id: payer });
     localStorage.setItem(`subs_${pair}`, JSON.stringify(subs)); 
