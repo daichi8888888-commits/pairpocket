@@ -60,7 +60,7 @@ function showToast(msg: string, isError = false) {
   }, 2500);
 }
 
-// ★ サブスク自動追加機能の強化（日付が来たら確実に発動）
+// サブスク自動追加機能
 async function processAutoSubs() {
   const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
   let addedNames = [];
@@ -101,7 +101,7 @@ async function processAutoSubs() {
   }
 }
 
-// ★ リアルタイム同期機能（相手の入力を5秒ごとにこっそり検知）
+// リアルタイム同期機能
 async function backgroundSync() {
   if (!pair || document.visibilityState !== 'visible') return;
   const oldExpLen = expenses.length;
@@ -115,10 +115,8 @@ async function backgroundSync() {
   const newExpLen = e.data?.length || 0;
   const newSetLen = s.data?.length || 0;
   
-  // 相手がデータを追加/削除した時だけ画面を更新する
   if (oldExpLen !== newExpLen || oldSetLen !== newSetLen) {
     await load();
-    // 入力中に画面がリフレッシュされるのを防ぐため、入力中以外のみ描画
     const activeTags = ['INPUT', 'TEXTAREA', 'SELECT'];
     const isTyping = activeTags.includes(document.activeElement?.tagName || '');
     if (!isTyping || currentTab !== 'entry') {
@@ -128,7 +126,6 @@ async function backgroundSync() {
   }
 }
 
-// 定期チェック ＆ 画面に戻ってきた瞬間のチェック
 setInterval(backgroundSync, 5000);
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible' && pair) {
@@ -141,6 +138,7 @@ document.addEventListener('visibilitychange', async () => {
   }
 });
 
+// ★ 爆速起動コア：ページを開いた0.001秒で実行
 const initCache = () => {
   const cached = localStorage.getItem('pp_cache');
   if (cached) {
@@ -499,7 +497,6 @@ async function render(isInitial = false) {
         </div>
       </section>
 
-      <!-- ミニゲームタブ -->
       <section id="sec-minigame" style="display: none;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
           <h2 style="margin: 0; font-size: 18px;">🎮 ふたりで待ち時間対戦</h2>
@@ -530,7 +527,6 @@ async function render(isInitial = false) {
         </div>
       </section>
 
-      <!-- スケジュールタブ -->
       <section id="sec-schedule">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
           <h2 style="margin: 0; font-size: 18px;">📅 ふたりの予定</h2>
@@ -626,7 +622,6 @@ async function render(isInitial = false) {
         </div>
       </section>
 
-      <!-- 水道光熱費タブ -->
       <section id="sec-utilities">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
           <button id="closeUtils" class="ghost" style="padding: 10px 14px; visibility: hidden;">戻る</button>
@@ -699,7 +694,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 12.0.0<br>（完全リアルタイム同期＆サブスク強化版）
+          App Version: 13.0.0<br>（超爆速・遅延ゼロモード搭載）
         </div>
       </section>
 
@@ -1199,6 +1194,7 @@ function wire(state: any) {
 
   q('#utilModeToggle')?.addEventListener('click', () => { utilViewMode = utilViewMode === 'trend' ? 'average' : 'trend'; render(); });
 
+  // ★ 追加を即時反映に変更
   q('#addUtilBtn')?.addEventListener('click', () => {
     const month = val('#utilMonth'); const type = val('#utilType'); const amount = Number(val('#utilAmount'));
     if (!month || !amount) { showToast('⚠️ 月と金額を入力してください', true); return; }
@@ -1206,6 +1202,7 @@ function wire(state: any) {
     utils.push({ id: Date.now().toString(), month, type, amount });
     localStorage.setItem(`utils_${pair}`, JSON.stringify(utils)); 
     showToast('💧 記録しました');
+    q('#utilAmount').value = '';
     render();
   });
 
@@ -1288,7 +1285,7 @@ function wire(state: any) {
     q('#editModal').style.display = 'none';
   });
 
-  q('#saveEditBtn')?.addEventListener('click', async () => {
+  q('#saveEditBtn')?.addEventListener('click', () => {
     const id = val('#editId');
     const amount = Number(val('#editAmount'));
     const title = val('#editTitle').trim();
@@ -1298,21 +1295,25 @@ function wire(state: any) {
 
     if (!title || !amount || amount <= 0) return showToast('⚠️ 正しい金額と内容を入力してください', true);
 
-    const { error } = await supabase.from('expenses').update({
-      amount: amount,
-      title: title,
-      category: cat,
-      expense_date: date,
-      payer_id: payer,
-      updated_at: new Date().toISOString()
-    }).eq('id', id);
-
-    if (error) return alert('更新に失敗しました。\n' + error.message);
+    const target = expenses.find(x => x.id === id);
+    if (target) {
+      target.amount = amount;
+      target.title = title;
+      target.category = cat;
+      target.expense_date = date;
+      target.payer_id = payer;
+      target.updated_at = new Date().toISOString();
+    }
     
     q('#editModal').style.display = 'none';
-    showToast('✏️ 編集を保存しました！');
-    await load();
     render();
+    showToast('✏️ 編集を保存しました！');
+
+    supabase.from('expenses').update({
+      amount: amount, title: title, category: cat, expense_date: date, payer_id: payer, updated_at: new Date().toISOString()
+    }).eq('id', id).then(({error}) => {
+      if (error) showToast('⚠️ サーバーへの保存に失敗しました', true);
+    });
   });
   
   q('#out')?.addEventListener('click', logout);
@@ -1326,59 +1327,122 @@ function wire(state: any) {
     state.amount = inputAmt; settle(state);
   });
   
-  document.querySelectorAll('.del').forEach((b: any) => b.onclick = async () => {
+  document.querySelectorAll('.del').forEach((b: any) => b.onclick = () => {
     const id = b.dataset.id; const e = expenses.find(x => x.id === id);
     if(e) {
-      const { error } = await supabase.from('expenses').update({ title: '[削除済] ' + uid + '::' + (e.title || '支出') }).eq('id', id);
-      if (error) return alert('削除に失敗しました。\n' + error.message); 
+      const origTitle = e.title;
+      e.title = '[削除済] ' + uid + '::' + (e.title || '支出');
+      render();
       showToast('🗑 削除しました');
-      await load(); render();
+
+      supabase.from('expenses').update({ title: e.title }).eq('id', id).then(({error}) => {
+         if (error) { e.title = origTitle; render(); showToast('⚠️ 削除に失敗しました', true); }
+      });
     }
   });
 
-  document.querySelectorAll('.restore').forEach((b: any) => b.onclick = async () => {
+  document.querySelectorAll('.restore').forEach((b: any) => b.onclick = () => {
     if (!confirm('この履歴を元に戻しますか？')) return;
     const id = b.dataset.id; const e = expenses.find(x => x.id === id);
     if(e) {
       const originalTitle = e.title.replace('[削除済] ', '').split('::').slice(1).join('::');
-      const { error } = await supabase.from('expenses').update({ title: originalTitle }).eq('id', id);
-      if (error) return alert('復元に失敗しました。\n' + error.message); 
+      e.title = originalTitle;
+      render();
       showToast('↩️ 復元しました');
-      await load(); render();
+
+      supabase.from('expenses').update({ title: originalTitle }).eq('id', id).then(({error}) => {
+         if (error) { e.title = '[削除済] ' + uid + '::' + originalTitle; render(); showToast('⚠️ 復元に失敗しました', true); }
+      });
     }
   });
 
-  document.querySelectorAll('.undo-settle').forEach((b: any) => b.onclick = async () => {
+  document.querySelectorAll('.undo-settle').forEach((b: any) => b.onclick = () => {
     if (!confirm('この精算を取り消しますか？')) return;
     const id = b.dataset.id;
-    const { error } = await supabase.from('settlements').delete().eq('id', id);
-    if (error) return alert('取り消しに失敗しました。\n' + error.message); 
+    settlements = settlements.filter(x => x.id !== id);
+    render();
     showToast('↩️ 精算を取り消しました');
-    await load(); render();
+
+    supabase.from('settlements').delete().eq('id', id).then(({error}) => {
+      if (error) { load().then(() => render()); showToast('⚠️ 取り消しに失敗しました', true); }
+    });
   });
 }
 
-async function settle(x: any) {
+// ★ オプティミスティックUI：精算も遅延ゼロ
+function settle(x: any) {
   if (!confirm(`${yen(x.amount)}を精算済みにしますか？`)) return;
-  const { error } = await supabase.from('settlements').insert({
-    pair_id: pair, from_user_id: x.sender, to_user_id: x.receiver, amount: Math.round(x.amount), created_by: uid, memo: 'アプリから精算'
+  
+  const tempId = 'temp-set-' + Date.now();
+  settlements.unshift({
+    id: tempId,
+    pair_id: pair,
+    from_user_id: x.sender,
+    to_user_id: x.receiver,
+    amount: Math.round(x.amount),
+    created_by: uid,
+    settled_at: new Date().toISOString()
   });
-  if (error) return alert(error.message);
+  render();
   showToast('🎉 精算完了！');
-  await load(); render();
+
+  supabase.from('settlements').insert({
+    pair_id: pair, from_user_id: x.sender, to_user_id: x.receiver, amount: Math.round(x.amount), created_by: uid, memo: 'アプリから精算'
+  }).then(({error}) => {
+    if (error) {
+      settlements = settlements.filter(s => s.id !== tempId);
+      render();
+      showToast('⚠️ 通信エラーが発生しました', true);
+    } else {
+      load().then(() => render(false));
+    }
+  });
 }
 
-async function save() {
+// ★ オプティミスティックUI：追加が完全に0秒で反映される
+function save() {
   const amount = calc();
   if (!Number.isFinite(amount)) return showToast('⚠️ 金額または計算式を確認してください', true);
-  const { error } = await supabase.rpc('add_shared_expense', {
-    input_pair_id: pair, input_title: val('#title').trim() || '支出', input_amount: amount, input_payer_id: val('#payer'), input_category: val('#cat') || 'その他', input_expense_date: getToday(), input_memo: null
-  });
-  if (error) return alert(error.message);
-  await load();
   
-  q('#amount').value = ''; q('#title').value = ''; showCalc(); render(); 
+  const title = val('#title').trim() || '支出';
+  const payerId = val('#payer');
+  const cat = val('#cat') || 'その他';
+  const date = getToday();
+
+  // 1. 画面上に即座に追加（仮ID）
+  const tempId = 'temp-' + Date.now();
+  expenses.unshift({
+    id: tempId,
+    pair_id: pair,
+    title: title,
+    amount: amount,
+    payer_id: payerId,
+    category: cat,
+    expense_date: date,
+    created_at: new Date().toISOString()
+  });
+
+  q('#amount').value = ''; 
+  q('#title').value = ''; 
+  showCalc(); 
+  render(); 
   showToast('✅ 追加しました！');
+
+  // 2. 裏側でサーバーに非同期送信
+  supabase.rpc('add_shared_expense', {
+    input_pair_id: pair, input_title: title, input_amount: amount, input_payer_id: payerId, input_category: cat, input_expense_date: date, input_memo: null
+  }).then(({error}) => {
+    if (error) {
+      expenses = expenses.filter(x => x.id !== tempId);
+      render();
+      showToast('⚠️ 通信エラーで追加できませんでした', true);
+    } else {
+      load().then(() => {
+        const activeTags = ['INPUT', 'TEXTAREA', 'SELECT'];
+        if (!activeTags.includes(document.activeElement?.tagName || '')) render(false);
+      });
+    }
+  });
 }
 
 async function logout() { await supabase.auth.signOut(); boot(); }
