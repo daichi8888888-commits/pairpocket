@@ -138,7 +138,7 @@ document.addEventListener('visibilitychange', async () => {
   }
 });
 
-// ★ 爆速起動コア：ページを開いた0.001秒で実行
+// 爆速起動コア
 const initCache = () => {
   const cached = localStorage.getItem('pp_cache');
   if (cached) {
@@ -349,7 +349,7 @@ async function render(isInitial = false) {
       if (!isDel && e.updated_at && e.created_at && new Date(e.updated_at).getTime() - new Date(e.created_at).getTime() > 1000) {
         const updatedDate = new Date(e.updated_at);
         const updStr = `${updatedDate.getFullYear()}/${String(updatedDate.getMonth() + 1).padStart(2, '0')}/${String(updatedDate.getDate()).padStart(2, '0')}`;
-        editInfoHtml = `<div style="font-size: 10px; color: #b5a6ac; margin-top: 2px;">✏️ 編集済 (${updStr})</div>`;
+        editInfoHtml = `<div style="font-size: 10px; color: #b5a6ac; margin-top: 2px;">✏️️ 編集済 (${updStr})</div>`;
       }
 
       let displayTitle = e.title; let delName = '';
@@ -694,7 +694,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 13.0.0<br>（超爆速・遅延ゼロモード搭載）
+          App Version: 14.0.0<br>（Gemini 3.6 固定版）
         </div>
       </section>
 
@@ -747,7 +747,7 @@ async function render(isInitial = false) {
           
           <div id="receiptLoading" style="text-align: center; padding: 40px 0; color: #a76777; font-weight: bold; font-size: 16px;">
             <div style="font-size: 40px; margin-bottom: 15px;">🤖📸</div>
-            AIが解析中...<br><span style="font-size: 12px; font-weight: normal;">圧縮送信で高速化！</span>
+            AIで解析中...<br><span style="font-size: 12px; font-weight: normal;">圧縮送信で高速化！</span>
           </div>
 
           <div id="receiptItemsWrap" style="display: none; flex: 1; overflow-y: auto; margin-bottom: 15px; padding-right: 5px;">
@@ -1123,20 +1123,9 @@ function wire(state: any) {
         const base64 = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
         
         try {
-          q('#receiptLoading').innerHTML = '<div style="font-size: 40px; margin-bottom: 15px;">🔍🤖</div>AIモデルを検索中...';
-          const modelRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
-          const modelData = await modelRes.json();
-          if (!modelRes.ok) throw new Error('APIキーが無効か、通信エラーです');
-
-          const validModels = modelData.models.filter((m:any) => m.supportedGenerationMethods?.includes('generateContent'));
-          let targetModel = validModels.find((m:any) => m.name.includes('flash') && !m.name.includes('8b'));
-          if (!targetModel) targetModel = validModels.find((m:any) => m.name.includes('pro'));
-          if (!targetModel) targetModel = validModels[0];
-
-          if (!targetModel) throw new Error('利用可能なAIモデルがありません');
-          const modelName = targetModel.name.replace('models/', '');
-
-          q('#receiptLoading').innerHTML = `<div style="font-size: 40px; margin-bottom: 15px;">🤖📸</div>${modelName} で解析中...<br><span style="font-size: 12px; font-weight: normal;">数秒かかります</span>`;
+          // ★ エラーの指示通り、最新の gemini-3.6-flash に固定して実行！
+          const modelName = 'gemini-3.6-flash';
+          q('#receiptLoading').innerHTML = `<div style="font-size: 40px; margin-bottom: 15px;">🤖📸</div>AIで解析中...<br><span style="font-size: 12px; font-weight: normal;">圧縮送信で高速化！</span>`;
 
           const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
             method: 'POST',
@@ -1194,7 +1183,6 @@ function wire(state: any) {
 
   q('#utilModeToggle')?.addEventListener('click', () => { utilViewMode = utilViewMode === 'trend' ? 'average' : 'trend'; render(); });
 
-  // ★ 追加を即時反映に変更
   q('#addUtilBtn')?.addEventListener('click', () => {
     const month = val('#utilMonth'); const type = val('#utilType'); const amount = Number(val('#utilAmount'));
     if (!month || !amount) { showToast('⚠️ 月と金額を入力してください', true); return; }
@@ -1369,7 +1357,6 @@ function wire(state: any) {
   });
 }
 
-// ★ オプティミスティックUI：精算も遅延ゼロ
 function settle(x: any) {
   if (!confirm(`${yen(x.amount)}を精算済みにしますか？`)) return;
   
@@ -1399,7 +1386,6 @@ function settle(x: any) {
   });
 }
 
-// ★ オプティミスティックUI：追加が完全に0秒で反映される
 function save() {
   const amount = calc();
   if (!Number.isFinite(amount)) return showToast('⚠️ 金額または計算式を確認してください', true);
@@ -1409,7 +1395,6 @@ function save() {
   const cat = val('#cat') || 'その他';
   const date = getToday();
 
-  // 1. 画面上に即座に追加（仮ID）
   const tempId = 'temp-' + Date.now();
   expenses.unshift({
     id: tempId,
@@ -1428,7 +1413,6 @@ function save() {
   render(); 
   showToast('✅ 追加しました！');
 
-  // 2. 裏側でサーバーに非同期送信
   supabase.rpc('add_shared_expense', {
     input_pair_id: pair, input_title: title, input_amount: amount, input_payer_id: payerId, input_category: cat, input_expense_date: date, input_memo: null
   }).then(({error}) => {
