@@ -694,7 +694,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 14.0.0<br>（Gemini 3.6 固定版）
+          App Version: 15.0.0<br>（長文レシート対応・省エネプロンプト版）
         </div>
       </section>
 
@@ -1123,7 +1123,6 @@ function wire(state: any) {
         const base64 = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
         
         try {
-          // ★ エラーの指示通り、最新の gemini-3.6-flash に固定して実行！
           const modelName = 'gemini-3.6-flash';
           q('#receiptLoading').innerHTML = `<div style="font-size: 40px; margin-bottom: 15px;">🤖📸</div>AIで解析中...<br><span style="font-size: 12px; font-weight: normal;">圧縮送信で高速化！</span>`;
 
@@ -1132,7 +1131,8 @@ function wire(state: any) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               contents: [{ parts: [
-                  { text: "このレシート画像の品目と金額を読み取り、以下のJSON配列の形式で出力してください。小計、消費税、合計などの行は除外して、純粋な商品のみを抽出してください。JSON以外のテキストは一切含めないでください。\n[{\"name\": \"商品名\", \"price\": 100}]" },
+                  // ★ ここが長文レシート対策の「省エネプロンプト」です
+                  { text: "レシートの品目と金額のみをJSON配列で出力。小計・合計は除外。JSON以外出力禁止。\n[{\"name\":\"品名\",\"price\":100}]" },
                   { inlineData: { mimeType: 'image/jpeg', data: base64 } }
                 ] }],
               generationConfig: { responseMimeType: "application/json" }
@@ -1311,7 +1311,7 @@ function wire(state: any) {
   q('#settleBtn')?.addEventListener('click', () => {
     const inputAmt = Number(val('#settleAmount'));
     if (!inputAmt || inputAmt <= 0) return showToast('⚠️ 金額を正しく入力してください', true);
-    if (inputAmt > state.amount) return showToast('⚠️ 残高より多い金額は入力できません', true);
+    if (inputAmt > state.amount) return showToast('⚠️️ 残高より多い金額は入力できません', true);
     state.amount = inputAmt; settle(state);
   });
   
