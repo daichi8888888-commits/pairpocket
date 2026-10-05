@@ -349,7 +349,7 @@ async function render(isInitial = false) {
       if (!isDel && e.updated_at && e.created_at && new Date(e.updated_at).getTime() - new Date(e.created_at).getTime() > 1000) {
         const updatedDate = new Date(e.updated_at);
         const updStr = `${updatedDate.getFullYear()}/${String(updatedDate.getMonth() + 1).padStart(2, '0')}/${String(updatedDate.getDate()).padStart(2, '0')}`;
-        editInfoHtml = `<div style="font-size: 10px; color: #b5a6ac; margin-top: 2px;">✏️️ 編集済 (${updStr})</div>`;
+        editInfoHtml = `<div style="font-size: 10px; color: #b5a6ac; margin-top: 2px;">✏️ 編集済 (${updStr})</div>`;
       }
 
       let displayTitle = e.title; let delName = '';
@@ -694,7 +694,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 15.0.0<br>（長文レシート対応・省エネプロンプト版）
+          App Version: 16.0.0<br>（日本語エラー出し分け 搭載版）
         </div>
       </section>
 
@@ -1088,6 +1088,7 @@ function wire(state: any) {
     };
   });
 
+  // ★ レシート読み込み＆日本語エラーハンドリング組み込み
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
@@ -1131,7 +1132,6 @@ function wire(state: any) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               contents: [{ parts: [
-                  // ★ ここが長文レシート対策の「省エネプロンプト」です
                   { text: "レシートの品目と金額のみをJSON配列で出力。小計・合計は除外。JSON以外出力禁止。\n[{\"name\":\"品名\",\"price\":100}]" },
                   { inlineData: { mimeType: 'image/jpeg', data: base64 } }
                 ] }],
@@ -1139,9 +1139,12 @@ function wire(state: any) {
             })
           });
           
+          if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            throw { status: res.status, details: errorData };
+          }
+          
           const data = await res.json();
-          if (!res.ok) throw new Error(data.error?.message || 'APIエラーが発生しました');
-
           let text = data.candidates[0].content.parts[0].text;
           text = text.replace(/```json/gi, '').replace(/```/g, '').trim();
           const items = JSON.parse(text);
@@ -1149,8 +1152,29 @@ function wire(state: any) {
           
           receiptState = items.map((i:any) => ({...i, split: 'half'}));
           renderReceiptItems();
+
         } catch (err: any) {
-          alert('レシートの読み取りに失敗しました。エラー詳細:\n' + err.message);
+          // ★ ここで英語エラーを日本語＆絵文字に変換します！
+          let userMessage = "レシートの読み取りに失敗しました。";
+          const errorString = JSON.stringify(err.details || err).toLowerCase();
+          
+          if (err.status === 503 || errorString.includes("high demand") || errorString.includes("overloaded")) {
+             userMessage = "現在AIのサーバーが大変混み合っています💥\n数分待ってからもう一度お試しください！🙏";
+          } else if (err.status === 429 || errorString.includes("quota") || errorString.includes("exhausted")) {
+             userMessage = "利用制限に達しました。しばらく時間をおいてください⏳";
+          } else if (err.status === 400 && errorString.includes("token")) {
+             userMessage = "レシートが長すぎるため読み取れませんでした。短く分けてみてください🙇‍♂️";
+          } else if (err.status === 413 || errorString.includes("payload") || errorString.includes("image")) {
+             userMessage = "画像の情報量が多すぎます。少し離して撮影してください📷";
+          } else if (err.status === 404 || errorString.includes("not found")) {
+             userMessage = "AIモデルが見つかりません。設定を確認してください⚠️️";
+          } else if (err.details && err.details.error && err.details.error.message) {
+             userMessage = `エラー: ${err.details.error.message}`;
+          } else if (err.message) {
+             userMessage = `エラー: ${err.message}`;
+          }
+
+          alert(userMessage);
           q('#receiptModal').style.display = 'none';
         }
         q('#receiptInput').value = '';
@@ -1311,7 +1335,7 @@ function wire(state: any) {
   q('#settleBtn')?.addEventListener('click', () => {
     const inputAmt = Number(val('#settleAmount'));
     if (!inputAmt || inputAmt <= 0) return showToast('⚠️ 金額を正しく入力してください', true);
-    if (inputAmt > state.amount) return showToast('⚠️️ 残高より多い金額は入力できません', true);
+    if (inputAmt > state.amount) return showToast('⚠️ 残高より多い金額は入力できません', true);
     state.amount = inputAmt; settle(state);
   });
   
@@ -1336,10 +1360,10 @@ function wire(state: any) {
       const originalTitle = e.title.replace('[削除済] ', '').split('::').slice(1).join('::');
       e.title = originalTitle;
       render();
-      showToast('↩️ 復元しました');
+      showToast('↩️️ 復元しました');
 
       supabase.from('expenses').update({ title: originalTitle }).eq('id', id).then(({error}) => {
-         if (error) { e.title = '[削除済] ' + uid + '::' + originalTitle; render(); showToast('⚠️ 復元に失敗しました', true); }
+         if (error) { e.title = '[削除済] ' + uid + '::' + originalTitle; render(); showToast('⚠️️ 復元に失敗しました', true); }
       });
     }
   });
@@ -1419,7 +1443,7 @@ function save() {
     if (error) {
       expenses = expenses.filter(x => x.id !== tempId);
       render();
-      showToast('⚠️ 通信エラーで追加できませんでした', true);
+      showToast('⚠️️ 通信エラーで追加できませんでした', true);
     } else {
       load().then(() => {
         const activeTags = ['INPUT', 'TEXTAREA', 'SELECT'];
