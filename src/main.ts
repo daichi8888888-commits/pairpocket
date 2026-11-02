@@ -13,6 +13,7 @@ let schedCalYear = new Date().getFullYear();
 let schedCalMonth = new Date().getMonth();
 let schedSelectedDates: string[] = [];
 let receiptState: { name: string, price: number, split: 'mine' | 'half' | 'partner' }[] = [];
+let pendingReceiptItems: { name: string, price: number, split: 'mine' | 'half' | 'partner' }[] = [];
 let smartInputState: { title: string, claimAmount: number, payer: 'me' | 'partner', category: string, note: string }[] = [];
 
 // 献立AI用の状態
@@ -49,6 +50,18 @@ const fmtTime = (raw: string, memo?: string, expDate?: string) => {
   if (isNaN(d.getTime())) return raw;
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
+
+// メモ欄からレシート内訳データを抽出するヘルパー
+function parseReceiptMemo(memo: any): { name: string, price: number, split: 'mine' | 'half' | 'partner' }[] | null {
+  if (!memo || typeof memo !== 'string' || !memo.startsWith('{')) return null;
+  try {
+    const obj = JSON.parse(memo);
+    if (obj && obj.type === 'receipt' && Array.isArray(obj.items)) {
+      return obj.items;
+    }
+  } catch {}
+  return null;
+}
 
 // 緑のふわっと出る通知（トースト）
 function showToast(msg: string, isError = false) {
@@ -449,6 +462,7 @@ async function render(isInitial = false) {
       const e = item.data;
       const tStr = fmtTime(item.raw, e.memo, e.expense_date);
       const isDel = typeof e.title === 'string' && e.title.startsWith('[削除済]');
+      const receiptItems = parseReceiptMemo(e.memo);
       
       let editInfoHtml = '';
       if (!isDel && e.updated_at && e.created_at && new Date(e.updated_at).getTime() - new Date(e.created_at).getTime() > 1000) {
@@ -463,6 +477,16 @@ async function render(isInitial = false) {
         delName = name(parts[0]); displayTitle = parts.slice(1).join('::');
       }
 
+      // ★ レシート内訳がある場合は、金額自体をタップ可能なボタンにして内訳を見れるようにする
+      let amountDisplayHtml = '';
+      if (isDel) {
+        amountDisplayHtml = `<del style="color:#b5a6ac;"><b>${yen(e.amount)}</b></del>`;
+      } else if (receiptItems) {
+        amountDisplayHtml = `<button class="view-receipt-detail" data-id="${e.id}" title="タップしてレシート内訳を表示" style="background:#fff0f3; border:1px solid #ffccd5; color:#e7617d; padding:4px 10px; border-radius:10px; font-weight:800; font-size:15px; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">🧾 ${yen(e.amount)} <span style="font-size:10px;">▾</span></button>`;
+      } else {
+        amountDisplayHtml = `<b>${yen(e.amount)}</b>`;
+      }
+
       timelineHtml += `<div class="expense ${isDel ? 'deleted-log' : ''}">
         <div class="expense-left">
           ${isDel ? `<del style="color:#b5a6ac;"><b class="break-text">${esc(displayTitle)}</b></del>` : `<b class="break-text">${esc(displayTitle)}</b>`}
@@ -473,7 +497,7 @@ async function render(isInitial = false) {
           ${editInfoHtml}
         </div>
         <div class="expense-right">
-          ${isDel ? `<del style="color:#b5a6ac;"><b>${yen(e.amount)}</b></del>` : `<b>${yen(e.amount)}</b>`}
+          ${amountDisplayHtml}
           <div style="margin-top: 6px; display: flex; gap: 6px; justify-content: flex-end;">
             ${!isDel ? `
               <button class="edit ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #5995bd; border-radius: 8px;">編集</button>
@@ -511,7 +535,7 @@ async function render(isInitial = false) {
         <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 20px; position: absolute; right: 0; top: 0; border-radius: 12px;">☰</button>
       </div>
       
-      <!-- ☰ サイドメニュー（サブ機能を選択形式で分離） -->
+      <!-- ☰ サイドメニュー -->
       <div id="menuDrawer" class="hide" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 9999; backdrop-filter: blur(2px);">
         <div id="menuContent" style="position: absolute; top: 0; right: 0; bottom: 0; width: 270px; background: #fffcfc; padding: 20px; box-shadow: -4px 0 15px rgba(0,0,0,0.1); overflow-y: auto;">
           <button id="closeDrawerBtn" class="ghost" style="position: absolute; top: max(20px, env(safe-area-inset-top)); right: 20px; border-radius: 50%; width: 40px; height: 40px; padding: 0; display:flex; align-items:center; justify-content:center; font-size: 20px;">×</button>
@@ -555,7 +579,14 @@ async function render(isInitial = false) {
             <button type="button" data-op="*">×</button><button type="button" data-op="/">÷</button>
           </div>
 
-          <div id="result" class="result">計算結果：¥0</div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 8px;">
+            <div id="result" class="result" style="margin: 0;">計算結果：¥0</div>
+            ${pendingReceiptItems.length > 0 ? `
+              <button id="reopenReceiptBtn" type="button" class="ghost" style="padding: 6px 12px; font-size: 12px; background: #fff0f3; color: #e7617d; border: 1px solid #ffccd5; border-radius: 12px; font-weight: bold; white-space: nowrap;">
+                🧾 内訳を見る・再編集 (${pendingReceiptItems.length}品)
+              </button>
+            ` : ''}
+          </div>
           
           <div class="quick">
             <button data-plus="100">+100</button><button data-plus="500">+500</button>
@@ -607,7 +638,7 @@ async function render(isInitial = false) {
         </div>
       </section>
 
-      <!-- メイン③：履歴タブ（＋🤖AI家計簿アナリストボタン） -->
+      <!-- メイン③：履歴タブ -->
       <section id="sec-history">
         <div class="card" style="padding: 12px 14px; margin-top: 20px; display: flex; gap: 8px; align-items: center;">
           <select id="monthSelect" class="field" style="margin:0; font-weight:bold; flex: 1;">
@@ -617,7 +648,10 @@ async function render(isInitial = false) {
           <button id="btnAiAnalyst" class="ghost" style="padding: 10px 12px; font-size: 12px; font-weight: bold; background: #fff0f6; color: #bf4f68; border-radius: 12px; white-space: nowrap;">🤖 AI分析</button>
         </div>
         <div class="card history-scroll">
-          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0; z-index: 1;">タイムライン</h2>
+          <div style="display:flex; justify-content:space-between; align-items:center; position: sticky; top: 0; background: #fff; padding-bottom: 5px; z-index: 1;">
+            <h2 style="margin: 0;">タイムライン</h2>
+            <span class="muted" style="font-size:11px;">🧾マークの金額をタップで内訳表示</span>
+          </div>
           <div style="margin-top: 10px;">${timelineHtml}</div>
         </div>
         <div class="card history-scroll">
@@ -706,7 +740,7 @@ async function render(isInitial = false) {
         ` : ''}
       </section>
 
-      <!-- サブ機能②：🎮 待ち時間ミニゲーム（⚡反射神経 / 💣爆弾 / 🤖AIクイズ） -->
+      <!-- サブ機能②：🎮 待ち時間ミニゲーム -->
       <section id="sec-minigame" style="display: none;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
           <h2 style="margin: 0; font-size: 18px;">🎮 ふたりで待ち時間対戦</h2>
@@ -718,7 +752,6 @@ async function render(isInitial = false) {
           <button id="btnGameQuiz" class="sched-mode-btn ${miniGameMode === 'quiz' ? 'active' : 'inactive'}">🤖 AIクイズ</button>
         </div>
 
-        <!-- 反射神経バトル -->
         <div id="wrapGameReact" class="card" style="padding: 12px; text-align: center; display: ${miniGameMode === 'react' ? 'block' : 'none'};">
           <div style="display:flex; justify-content:space-around; margin-bottom:12px; font-weight:bold; font-size:15px;">
             <span style="color:#5995bd;">${esc(partnerName)}: <span id="reactScoreP2" style="font-size:20px;">${reactScoreP2}</span> 点</span>
@@ -732,14 +765,12 @@ async function render(isInitial = false) {
           <button id="reactStartBtn" class="primary full" style="margin-top:14px; padding:12px; font-size:16px;">対戦スタート！</button>
         </div>
 
-        <!-- 爆弾ルーレット -->
         <div id="wrapGameBomb" class="card" style="text-align:center; padding: 20px 15px; display: ${miniGameMode === 'bomb' ? 'block' : 'none'};">
           <div id="bombMsg" style="font-weight:bold; color:#a76777; margin-bottom:15px; font-size:16px;">交互にタップ！ハズレ(💣)で負け！</div>
           <div id="bombGrid" style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; margin-bottom:20px;"></div>
           <button id="bombResetBtn" class="dark full" style="padding:12px;">新しく始める</button>
         </div>
 
-        <!-- 🤖 AI 4択クイズバトル -->
         <div id="wrapGameQuiz" class="card" style="padding: 16px; display: ${miniGameMode === 'quiz' ? 'block' : 'none'};">
           <div style="display:flex; justify-content:space-around; align-items:center; margin-bottom:14px; background:#fffafb; padding:10px; border-radius:12px; border:1px solid #f0dfe4;">
             <div style="text-align:center;">
@@ -947,7 +978,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 18.0.0<br>（5大AI＆ペア機能パック搭載版）
+          App Version: 19.0.0<br>（レシート金額タップ内訳表示 搭載版）
         </div>
       </section>
 
@@ -1013,7 +1044,18 @@ async function render(isInitial = false) {
         </div>
       </div>
 
-      <!-- モーダル3：🪄 AIスマート文章入力（機能③） -->
+      <!-- ★ モーダル2.5：履歴の金額タップで開く「レシート内訳詳細」 -->
+      <div id="receiptDetailModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
+        <div class="card" style="width: 100%; max-width: 420px; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden;">
+          <h2 id="receiptDetailTitle" style="margin-top: 0; margin-bottom: 4px; font-size: 18px;">🧾 レシート内訳</h2>
+          <div id="receiptDetailMeta" class="muted" style="font-size: 12px; margin-bottom: 12px;"></div>
+          <div id="receiptDetailList" style="flex: 1; overflow-y: auto; border-top: 1px solid #f0dfe4; padding-top: 8px; margin-bottom: 12px;"></div>
+          <div id="receiptDetailSummary" style="background: #fffafb; border: 1px solid #f0dfe4; border-radius: 12px; padding: 12px; margin-bottom: 14px;"></div>
+          <button id="closeReceiptDetailBtn" class="primary full">閉じる</button>
+        </div>
+      </div>
+
+      <!-- モーダル3：🪄 AIスマート文章入力 -->
       <div id="smartInputModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
         <div class="card" style="width: 100%; max-width: 420px; max-height: 85vh; display: flex; flex-direction: column; overflow-y: auto;">
           <h2 style="margin-top: 0; font-size: 19px;">🪄 AIスマート文章入力</h2>
@@ -1030,7 +1072,7 @@ async function render(isInitial = false) {
         </div>
       </div>
 
-      <!-- モーダル4：📊 AI家計簿アナリスト（機能④） -->
+      <!-- モーダル4：📊 AI家計簿アナリスト -->
       <div id="aiReportModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
         <div class="card" style="width: 100%; max-width: 420px; max-height: 85vh; display: flex; flex-direction: column; overflow-y: auto;">
           <h2 style="margin-top: 0; font-size: 19px;">🤖 AI家計簿アナリスト</h2>
@@ -1041,7 +1083,7 @@ async function render(isInitial = false) {
     </main>
   `;
 
-  wire(stateObj, myName, partnerName, partnerMember?.user_id || uid, filteredExpenses);
+  wire(stateObj, myName, partnerName, partnerMember?.user_id || uid, filteredExpenses, name);
   setTab(currentTab); 
   showCalc();
   if (currentQuiz) renderQuizArea();
@@ -1231,7 +1273,7 @@ function showCalc() {
   if (q('#result')) q('#result').textContent = Number.isFinite(n) ? `計算結果：${yen(n)}` : '計算式を確認';
 }
 
-function wire(state: any, myName: string, partnerName: string, partnerUid: string, filteredExpenses: any[]) {
+function wire(state: any, myName: string, partnerName: string, partnerUid: string, filteredExpenses: any[], nameFn: (id: string) => string) {
   q('#menuBtn')?.addEventListener('click', () => q('#menuDrawer').classList.remove('hide'));
   q('#closeDrawerBtn')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
   q('#menuDrawer')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
@@ -1246,6 +1288,79 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
   });
   document.querySelectorAll('[data-tab]').forEach((b: any) => {
     b.onclick = () => { setTab(b.dataset.tab); };
+  });
+
+  // ----------------------------------------
+  // ★ 履歴の金額タップで「レシート内訳詳細」を表示
+  // ----------------------------------------
+  document.querySelectorAll('.view-receipt-detail').forEach((b: any) => {
+    b.onclick = () => {
+      const exp = expenses.find(x => x.id === b.dataset.id);
+      if (!exp) return;
+      const items = parseReceiptMemo(exp.memo);
+      if (!items) return;
+
+      q('#receiptDetailTitle').textContent = `🧾 ${exp.title}`;
+      q('#receiptDetailMeta').textContent = `支払: ${nameFn(exp.payer_id)} ・ ${fmtTime(exp.created_at || exp.expense_date, exp.memo, exp.expense_date)}`;
+
+      let rawSum = 0;
+      let claimSum = 0;
+      q('#receiptDetailList').innerHTML = items.map(item => {
+        const price = Number(item.price) || 0;
+        rawSum += price;
+        let share = 0;
+        let badgeText = '自分 (0%)';
+        let badgeStyle = 'background:#f0f4f8; color:#5995bd;';
+        if (item.split === 'half') {
+          share = Math.round(price / 2);
+          claimSum += price / 2;
+          badgeText = '折半 (50%)';
+          badgeStyle = 'background:#fff0f3; color:#e7617d;';
+        } else if (item.split === 'partner') {
+          share = price;
+          claimSum += price;
+          badgeText = '相手 (100%)';
+          badgeStyle = 'background:#ffe5e9; color:#a13c52;';
+        }
+        return `
+          <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid #f5e9ed; font-size:13px;">
+            <div style="flex:1; padding-right:8px;">
+              <div style="font-weight:bold; color:#3e3438;">${esc(item.name)}</div>
+              <div class="muted" style="font-size:11px; margin-top:2px;">単価 ${yen(price)} <span style="padding:2px 6px; border-radius:6px; font-weight:bold; font-size:10px; margin-left:4px; ${badgeStyle}">${badgeText}</span></div>
+            </div>
+            <div style="text-align:right; white-space:nowrap;">
+              <span class="muted" style="font-size:11px;">請求分</span><br>
+              <b style="color:#e7617d; font-size:14px;">${yen(share)}</b>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      q('#receiptDetailSummary').innerHTML = `
+        <div style="display:flex; justify-content:space-between; font-size:13px; color:#59464e; margin-bottom:6px;">
+          <span>レシート合計 (${items.length}品):</span>
+          <b>${yen(rawSum)}</b>
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:16px; color:#e7617d; font-weight:800;">
+          <span>相手への請求額:</span>
+          <span>${yen(exp.amount || Math.round(claimSum))}</span>
+        </div>
+      `;
+
+      q('#receiptDetailModal').style.display = 'flex';
+    };
+  });
+
+  q('#closeReceiptDetailBtn')?.addEventListener('click', () => {
+    q('#receiptDetailModal').style.display = 'none';
+  });
+
+  // ★ 入力画面の金額エリアからレシート内訳を再確認・再編集
+  q('#reopenReceiptBtn')?.addEventListener('click', () => {
+    if (pendingReceiptItems.length === 0) return;
+    receiptState = pendingReceiptItems.map(i => ({ ...i }));
+    q('#receiptModal').style.display = 'flex';
+    renderReceiptItems();
   });
 
   // ----------------------------------------
@@ -1486,7 +1601,6 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
     initBombGame();
   });
 
-  // AIクイズ操作
   document.querySelectorAll('.quiz-theme-chip').forEach((chip: any) => {
     chip.onclick = () => { q('#quizThemeInput').value = chip.dataset.theme; };
   });
@@ -1692,18 +1806,28 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
       if(i.split === 'half') total += i.price / 2;
       if(i.split === 'partner') total += i.price;
     });
-    q('#amount').value = Math.round(total).toString();
-    q('#title').value = 'スーパー (レシート自動計算)';
-    showCalc();
+    pendingReceiptItems = receiptState.map(i => ({ ...i }));
+    const newAmt = Math.round(total).toString();
+    const newTitle = val('#title').trim() || `🧾 レシート (${pendingReceiptItems.length}品)`;
+    q('#amount').value = newAmt;
+    q('#title').value = newTitle;
     q('#receiptModal').style.display = 'none';
-    showToast('📝 仕分けを反映しました'); 
+    render(false);
+    showToast('📝 仕分けを反映しました（内訳も保存されます）'); 
   });
 
   q('#monthSelect')?.addEventListener('change', (e: any) => { currentMonth = e.target.value; render(); });
   document.querySelectorAll('[data-op]').forEach((b: any) => { b.onclick = (e: Event) => { e.preventDefault(); const input = q('#amount'); input.value += b.dataset.op; showCalc(); input.focus(); }; });
   document.querySelectorAll('[data-plus]').forEach((b: any) => { b.onclick = (e: Event) => { e.preventDefault(); const n = calc(); q('#amount').value = String((Number.isFinite(n) ? n : 0) + Number(b.dataset.plus)); showCalc(); q('#amount').focus(); }; });
 
-  if (q('#clear')) q('#clear').onclick = (e: Event) => { e.preventDefault(); q('#amount').value = ''; showCalc(); q('#amount').focus(); };
+  if (q('#clear')) q('#clear').onclick = (e: Event) => {
+    e.preventDefault();
+    pendingReceiptItems = [];
+    q('#amount').value = '';
+    showCalc();
+    render(false);
+    q('#amount').focus();
+  };
   if (q('#split')) q('#split').onclick = (e: Event) => { e.preventDefault(); const n = calc(); if (Number.isFinite(n) && n > 0) { q('#amount').value = String(Math.round(n / 2)); showCalc(); q('#amount').focus(); } };
 
   q('#utilModeToggle')?.addEventListener('click', () => { utilViewMode = utilViewMode === 'trend' ? 'average' : 'trend'; render(); });
@@ -1920,6 +2044,9 @@ function save() {
   const payerId = val('#payer');
   const cat = val('#cat') || 'その他';
   const date = getToday();
+  const memoPayload = pendingReceiptItems.length > 0
+    ? JSON.stringify({ type: 'receipt', items: pendingReceiptItems })
+    : null;
 
   const tempId = 'temp-' + Date.now();
   expenses.unshift({
@@ -1930,9 +2057,11 @@ function save() {
     payer_id: payerId,
     category: cat,
     expense_date: date,
+    memo: memoPayload,
     created_at: new Date().toISOString()
   });
 
+  pendingReceiptItems = [];
   q('#amount').value = ''; 
   q('#title').value = ''; 
   showCalc(); 
@@ -1940,7 +2069,7 @@ function save() {
   showToast('✅ 追加しました！');
 
   supabase.rpc('add_shared_expense', {
-    input_pair_id: pair, input_title: title, input_amount: amount, input_payer_id: payerId, input_category: cat, input_expense_date: date, input_memo: null
+    input_pair_id: pair, input_title: title, input_amount: amount, input_payer_id: payerId, input_category: cat, input_expense_date: date, input_memo: memoPayload
   }).then(({error}) => {
     if (error) {
       expenses = expenses.filter(x => x.id !== tempId);
