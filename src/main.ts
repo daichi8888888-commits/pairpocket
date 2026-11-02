@@ -15,6 +15,8 @@ let schedSelectedDates: string[] = [];
 let receiptState: { name: string, price: number, split: 'mine' | 'half' | 'partner' }[] = [];
 let pendingReceiptItems: { name: string, price: number, split: 'mine' | 'half' | 'partner' }[] = [];
 let smartInputState: { title: string, claimAmount: number, payer: 'me' | 'partner', category: string, note: string }[] = [];
+let speechRec: any = null;
+let isListening = false;
 
 // 献立AI用の状態
 let recipeImageBase64 = '';
@@ -27,9 +29,13 @@ let reactScoreP1 = 0, reactScoreP2 = 0;
 let reactGameState: 'idle' | 'waiting' | 'ready' = 'idle';
 let reactTimer: any = null;
 let bombTiles: { hasBomb: boolean; opened: boolean }[] = [];
+
+// クイズ（2人回答対応）用の状態
 let quizScoreP1 = 0, quizScoreP2 = 0;
 let currentQuiz: { question: string; options: string[]; answerIndex: number; explanation: string } | null = null;
-let quizAnswered = false;
+let quizPickP1: number | null = null;
+let quizPickP2: number | null = null;
+let quizRevealed = false;
 let isProcessingSubs = false;
 
 const getToday = () => {
@@ -477,7 +483,6 @@ async function render(isInitial = false) {
         delName = name(parts[0]); displayTitle = parts.slice(1).join('::');
       }
 
-      // ★ レシート内訳がある場合は、金額自体をタップ可能なボタンにして内訳を見れるようにする
       let amountDisplayHtml = '';
       if (isDel) {
         amountDisplayHtml = `<del style="color:#b5a6ac;"><b>${yen(e.amount)}</b></del>`;
@@ -563,7 +568,7 @@ async function render(isInitial = false) {
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 6px;">
             <label class="muted" style="white-space: nowrap;">相手への請求額</label>
             <div style="display: flex; gap: 6px;">
-              <button id="btnSmartInput" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #f0f4ff; color: #4361ee; border-radius: 12px; font-weight: bold;">🪄 AI文章入力</button>
+              <button id="btnSmartInput" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #f0f4ff; color: #4361ee; border-radius: 12px; font-weight: bold;">🪄 AI文章・音声入力</button>
               <button id="btnReceipt" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #ffe5e9; color: #a13c52; border-radius: 12px; font-weight: bold;">📷 レシート読込</button>
             </div>
             <input type="file" id="receiptInput" accept="image/*" style="display:none;">
@@ -771,18 +776,19 @@ async function render(isInitial = false) {
           <button id="bombResetBtn" class="dark full" style="padding:12px;">新しく始める</button>
         </div>
 
+        <!-- ★ 2人同時回答＆スコアリセット対応のAIクイズ -->
         <div id="wrapGameQuiz" class="card" style="padding: 16px; display: ${miniGameMode === 'quiz' ? 'block' : 'none'};">
-          <div style="display:flex; justify-content:space-around; align-items:center; margin-bottom:14px; background:#fffafb; padding:10px; border-radius:12px; border:1px solid #f0dfe4;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; background:#fffafb; padding:10px 14px; border-radius:12px; border:1px solid #f0dfe4;">
             <div style="text-align:center;">
               <div style="font-size:12px; color:#5995bd; font-weight:bold;">${esc(partnerName)}</div>
               <b id="quizScoreP2Label" style="font-size:20px; color:#5995bd;">${quizScoreP2}点</b>
-              <button id="btnQuizPlusP2" class="ghost" style="padding:2px 8px; font-size:11px; margin-left:4px;">+1</button>
             </div>
-            <div style="color:#d5c5cb; font-weight:bold;">VS</div>
+            <div style="text-align:center;">
+              <button id="btnQuizResetScore" class="ghost" style="padding:6px 12px; font-size:11px; border-radius:8px; color:#9b8d93; font-weight:bold;">🔄 0点に戻す</button>
+            </div>
             <div style="text-align:center;">
               <div style="font-size:12px; color:#e7617d; font-weight:bold;">${esc(myName)}</div>
               <b id="quizScoreP1Label" style="font-size:20px; color:#e7617d;">${quizScoreP1}点</b>
-              <button id="btnQuizPlusP1" class="ghost" style="padding:2px 8px; font-size:11px; margin-left:4px;">+1</button>
             </div>
           </div>
 
@@ -858,7 +864,7 @@ async function render(isInitial = false) {
             <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">時間</span>
             <input id="schedStartTime" type="time" class="field" style="margin:0; flex:1;">
             <span style="color:#a76777; font-weight:bold;">〜</span>
-            <input id="schedEndTime" type="time" class="field" style="margin:0; flex:1;">
+            <input id="schedEndTime" type="time" style="margin:0; flex:1;" class="field">
           </div>
 
           <button id="addSchedBtn" class="primary full" style="padding: 14px;">リストに追加</button>
@@ -978,7 +984,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 19.0.0<br>（レシート金額タップ内訳表示 搭載版）
+          App Version: 20.0.0<br>（音声マイクボタン＆2人同時回答クイズ対応版）
         </div>
       </section>
 
@@ -1044,7 +1050,7 @@ async function render(isInitial = false) {
         </div>
       </div>
 
-      <!-- ★ モーダル2.5：履歴の金額タップで開く「レシート内訳詳細」 -->
+      <!-- モーダル2.5：履歴の金額タップで開く「レシート内訳詳細」 -->
       <div id="receiptDetailModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
         <div class="card" style="width: 100%; max-width: 420px; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden;">
           <h2 id="receiptDetailTitle" style="margin-top: 0; margin-bottom: 4px; font-size: 18px;">🧾 レシート内訳</h2>
@@ -1055,12 +1061,15 @@ async function render(isInitial = false) {
         </div>
       </div>
 
-      <!-- モーダル3：🪄 AIスマート文章入力 -->
+      <!-- ★ モーダル3：🪄 AIスマート文章・音声入力（マイクボタン搭載） -->
       <div id="smartInputModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
         <div class="card" style="width: 100%; max-width: 420px; max-height: 85vh; display: flex; flex-direction: column; overflow-y: auto;">
-          <h2 style="margin-top: 0; font-size: 19px;">🪄 AIスマート文章入力</h2>
-          <p class="muted" style="margin-top: 0; font-size: 12px;">LINE感覚でしゃべるように入力すると、AIが自動で「誰が・何に・いくら請求か」を分解します（音声入力もおすすめ！）。</p>
-          <textarea id="smartInputText" class="field" rows="3" placeholder="例：私がランチ2400円払って割り勘。相手がガソリン代3600円出して割り勘。私が相手のカフェ代600円を立て替えた。" style="resize: none;"></textarea>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <h2 style="margin: 0; font-size: 18px;">🪄 AI文章・音声入力</h2>
+            <button id="btnVoiceInput" type="button" class="ghost" style="padding: 6px 12px; font-size: 12px; background: #ffe5e9; color: #e7617d; border-radius: 14px; font-weight: bold;">🎙️ マイクで話す</button>
+          </div>
+          <p class="muted" style="margin-top: 0; font-size: 11px;">上の「🎙️マイクで話す」を押して喋るか、キーボードのマイクで入力すると、AIが自動で支払いを分解します。</p>
+          <textarea id="smartInputText" class="field" rows="3" placeholder="例：私がランチ2400円払って割り勘。相手がガソリン代3600円出して割り勘。" style="resize: none;"></textarea>
           <button id="btnRunSmartParse" class="dark full" style="margin-bottom: 12px;">🤖 AIで解析する</button>
           
           <div id="smartInputPreview" style="display: none; border-top: 1px solid #f0dfe4; padding-top: 12px; margin-bottom: 12px;"></div>
@@ -1086,7 +1095,7 @@ async function render(isInitial = false) {
   wire(stateObj, myName, partnerName, partnerMember?.user_id || uid, filteredExpenses, name);
   setTab(currentTab); 
   showCalc();
-  if (currentQuiz) renderQuizArea();
+  if (currentQuiz) renderQuizArea(myName, partnerName);
 
   if (isInitial && currentTab === 'entry') {
     setTimeout(() => q('#amount')?.focus(), 100);
@@ -1175,42 +1184,124 @@ function renderBombGame() {
   });
 }
 
-function renderQuizArea() {
+// ★ 2人同時回答＆自動採点クイズUI
+function renderQuizArea(myName: string, partnerName: string) {
   const area = q('#quizPlayArea');
   if (!area || !currentQuiz) return;
 
+  const ans = currentQuiz.answerIndex;
+
+  // 選択肢リストの表示
+  const optionsHtml = currentQuiz.options.map((opt, idx) => {
+    let bg = '#fff'; let col = '#3e3438'; let border = '#f0dfe4';
+    if (quizRevealed && idx === ans) {
+      bg = '#e8f5e9'; col = '#2e7d32'; border = '#4caf50';
+    }
+    return `
+      <div style="padding:10px 12px; border-radius:10px; border:2px solid ${border}; background:${bg}; color:${col}; font-weight:bold; font-size:13px;">
+        ${idx + 1}. ${esc(opt)}
+      </div>
+    `;
+  }).join('');
+
+  // 2人分の回答ボタン生成ヘルパー
+  const makePlayerButtons = (player: 'P1' | 'P2', picked: number | null, labelName: string, themeColor: string) => {
+    let statusBadge = picked === null
+      ? '<span style="font-size:11px; color:#9b8d93;">選択待ち...</span>'
+      : (quizRevealed
+          ? (picked === ans
+              ? '<span style="font-size:12px; color:#2e7d32; font-weight:bold;">⭕ 正解！(+1点)</span>'
+              : `<span style="font-size:12px; color:#bf4f68; font-weight:bold;">❌ 不正解 (${picked + 1}を選択)</span>`)
+          : '<span style="font-size:11px; color:#4caf50; font-weight:bold;">🔒 選択済み！</span>');
+
+    const btns = [0, 1, 2, 3].map(idx => {
+      let btnBg = '#fff';
+      let btnCol = themeColor;
+      let btnBorder = '#f0dfe4';
+      if (quizRevealed) {
+        if (idx === ans) {
+          btnBg = '#4caf50'; btnCol = '#fff'; btnBorder = '#4caf50';
+        } else if (picked === idx) {
+          btnBg = '#bf4f68'; btnCol = '#fff'; btnBorder = '#bf4f68';
+        }
+      } else if (picked !== null) {
+        // カンニング防止のため、2人とも選ぶまではどの番号を押したか隠す
+        btnBg = '#f5eef0'; btnCol = '#b5a6ac';
+      }
+      return `<button class="quiz-player-pick" data-player="${player}" data-idx="${idx}" style="flex:1; padding:12px 0; border-radius:10px; border:2px solid ${btnBorder}; background:${btnBg}; color:${btnCol}; font-weight:900; font-size:16px; cursor:pointer;">${idx + 1}</button>`;
+    }).join('');
+
+    return `
+      <div style="background:#fff; border:1px solid #f0dfe4; border-radius:12px; padding:10px; margin-top:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <b style="font-size:13px; color:${themeColor};">👤 ${esc(labelName)}の回答</b>
+          ${statusBadge}
+        </div>
+        <div style="display:flex; gap:8px;">${btns}</div>
+      </div>
+    `;
+  };
+
   area.innerHTML = `
     <div style="background:#fffafb; border:1px solid #f0dfe4; border-radius:14px; padding:14px;">
-      <div style="font-weight:bold; font-size:15px; color:#3e3438; margin-bottom:12px; line-height:1.5;">Q. ${esc(currentQuiz.question)}</div>
-      <div style="display:flex; flex-direction:column; gap:8px;">
-        ${currentQuiz.options.map((opt, idx) => {
-          let bg = '#fff'; let col = '#3e3438'; let border = '#f0dfe4';
-          if (quizAnswered) {
-            if (idx === currentQuiz!.answerIndex) { bg = '#e8f5e9'; col = '#2e7d32'; border = '#4caf50'; }
-          }
-          return `<button class="quiz-opt-btn" data-idx="${idx}" style="text-align:left; padding:12px; border-radius:10px; border:2px solid ${border}; background:${bg}; color:${col}; font-weight:bold; font-size:14px; cursor:pointer;">${idx + 1}. ${esc(opt)}</button>`;
-        }).join('')}
+      <div style="font-weight:bold; font-size:15px; color:#3e3438; margin-bottom:10px; line-height:1.5;">Q. ${esc(currentQuiz.question)}</div>
+      <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px;">
+        ${optionsHtml}
       </div>
-      ${quizAnswered ? `
-        <div style="margin-top:12px; padding:10px; background:#fff0f3; border-radius:10px; font-size:13px; color:#59464e;">
-          <b>💡 正解は「${currentQuiz.answerIndex + 1}」！</b><br>${esc(currentQuiz.explanation)}
+
+      ${makePlayerButtons('P2', quizPickP2, partnerName, '#5995bd')}
+      ${makePlayerButtons('P1', quizPickP1, myName, '#e7617d')}
+
+      ${!quizRevealed ? `
+        <div style="text-align:center; margin-top:10px;">
+          <button id="btnRevealSingle" class="ghost" style="font-size:11px; padding:6px 12px; color:#9b8d93;">1人で遊ぶ / 今すぐ答えを見る</button>
         </div>
-      ` : ''}
+      ` : `
+        <div style="margin-top:12px; padding:12px; background:#fff0f3; border-radius:10px; font-size:13px; color:#59464e;">
+          <b>💡 正解は「${ans + 1}. ${esc(currentQuiz.options[ans])}」！</b><br>${esc(currentQuiz.explanation)}
+        </div>
+      `}
     </div>
   `;
 
-  document.querySelectorAll('.quiz-opt-btn').forEach((b: any) => {
+  const evaluateQuiz = () => {
+    quizRevealed = true;
+    let msg = '';
+    const p1Right = quizPickP1 === ans;
+    const p2Right = quizPickP2 === ans;
+    if (p1Right) quizScoreP1++;
+    if (p2Right) quizScoreP2++;
+    if (q('#quizScoreP1Label')) q('#quizScoreP1Label').textContent = `${quizScoreP1}点`;
+    if (q('#quizScoreP2Label')) q('#quizScoreP2Label').textContent = `${quizScoreP2}点`;
+
+    if (p1Right && p2Right) msg = '🎉 ふたりとも大正解！！ (+1点ずつ)';
+    else if (p1Right) msg = `⭕ ${myName}の正解！！ (+1点)`;
+    else if (p2Right) msg = `⭕ ${partnerName}の正解！！ (+1点)`;
+    else msg = '❌ ふたりとも不正解…！';
+
+    showToast(msg, !p1Right && !p2Right);
+    renderQuizArea(myName, partnerName);
+  };
+
+  document.querySelectorAll('.quiz-player-pick').forEach((b: any) => {
     b.onclick = () => {
-      if (quizAnswered) return;
-      quizAnswered = true;
-      const picked = Number(b.dataset.idx);
-      if (picked === currentQuiz?.answerIndex) {
-        showToast('⭕ 大正解！！正解した人に+1しよう！');
+      if (quizRevealed) return;
+      const player = b.dataset.player;
+      const idx = Number(b.dataset.idx);
+      if (player === 'P1') quizPickP1 = idx;
+      else quizPickP2 = idx;
+
+      if (quizPickP1 !== null && quizPickP2 !== null) {
+        evaluateQuiz();
       } else {
-        showToast('❌ ざんねん！不正解！', true);
+        renderQuizArea(myName, partnerName);
       }
-      renderQuizArea();
     };
+  });
+
+  q('#btnRevealSingle')?.addEventListener('click', () => {
+    if (quizRevealed) return;
+    evaluateQuiz();
   });
 }
 
@@ -1290,9 +1381,7 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
     b.onclick = () => { setTab(b.dataset.tab); };
   });
 
-  // ----------------------------------------
-  // ★ 履歴の金額タップで「レシート内訳詳細」を表示
-  // ----------------------------------------
+  // 履歴の金額タップで「レシート内訳詳細」を表示
   document.querySelectorAll('.view-receipt-detail').forEach((b: any) => {
     b.onclick = () => {
       const exp = expenses.find(x => x.id === b.dataset.id);
@@ -1355,7 +1444,6 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
     q('#receiptDetailModal').style.display = 'none';
   });
 
-  // ★ 入力画面の金額エリアからレシート内訳を再確認・再編集
   q('#reopenReceiptBtn')?.addEventListener('click', () => {
     if (pendingReceiptItems.length === 0) return;
     receiptState = pendingReceiptItems.map(i => ({ ...i }));
@@ -1364,7 +1452,7 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
   });
 
   // ----------------------------------------
-  // 機能③：🪄 AIスマート文章入力
+  // 機能③：🪄 AIスマート文章・音声入力（マイクボタン搭載）
   // ----------------------------------------
   q('#btnSmartInput')?.addEventListener('click', () => {
     smartInputState = [];
@@ -1373,8 +1461,65 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
     q('#smartInputModal').style.display = 'flex';
   });
   q('#closeSmartInputBtn')?.addEventListener('click', () => {
+    if (speechRec && isListening) {
+      try { speechRec.stop(); } catch {}
+      isListening = false;
+    }
     q('#smartInputModal').style.display = 'none';
   });
+
+  // ★ 音声認識マイクボタンの処理
+  q('#btnVoiceInput')?.addEventListener('click', () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert('お使いのブラウザは直接の音声認識ボタンに対応していません。\nキーボード右下にある「🎤マイクマーク」を押して話しかけてください！');
+      q('#smartInputText')?.focus();
+      return;
+    }
+
+    if (isListening && speechRec) {
+      speechRec.stop();
+      return;
+    }
+
+    speechRec = new SpeechRecognition();
+    speechRec.lang = 'ja-JP';
+    speechRec.interimResults = false;
+    speechRec.continuous = false;
+
+    const btn = q('#btnVoiceInput');
+    speechRec.onstart = () => {
+      isListening = true;
+      btn.textContent = '🛑 聞き取り中... (タップで停止)';
+      btn.style.background = '#e7617d';
+      btn.style.color = '#fff';
+    };
+
+    speechRec.onresult = (event: any) => {
+      const transcript = event.results?.[0]?.[0]?.transcript || '';
+      if (transcript) {
+        const cur = val('#smartInputText');
+        q('#smartInputText').value = cur ? `${cur}。${transcript}` : transcript;
+        showToast('🎙️ 音声を入力しました！');
+      }
+    };
+
+    speechRec.onerror = () => {
+      showToast('⚠️ 音声が聞き取れませんでした', true);
+    };
+
+    speechRec.onend = () => {
+      isListening = false;
+      if (btn) {
+        btn.textContent = '🎙️ マイクで話す';
+        btn.style.background = '#ffe5e9';
+        btn.style.color = '#e7617d';
+      }
+    };
+
+    speechRec.start();
+  });
+
   q('#btnRunSmartParse')?.addEventListener('click', async () => {
     const textInput = val('#smartInputText').trim();
     if (!textInput) return showToast('⚠️ 文章を入力してください', true);
@@ -1604,13 +1749,14 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
   document.querySelectorAll('.quiz-theme-chip').forEach((chip: any) => {
     chip.onclick = () => { q('#quizThemeInput').value = chip.dataset.theme; };
   });
-  q('#btnQuizPlusP1')?.addEventListener('click', () => {
-    quizScoreP1++;
-    q('#quizScoreP1Label').textContent = `${quizScoreP1}点`;
-  });
-  q('#btnQuizPlusP2')?.addEventListener('click', () => {
-    quizScoreP2++;
-    q('#quizScoreP2Label').textContent = `${quizScoreP2}点`;
+
+  // ★ クイズの得点リセットボタン
+  q('#btnQuizResetScore')?.addEventListener('click', () => {
+    quizScoreP1 = 0;
+    quizScoreP2 = 0;
+    q('#quizScoreP1Label').textContent = '0点';
+    q('#quizScoreP2Label').textContent = '0点';
+    showToast('🔄 スコアを0点にリセットしました');
   });
 
   q('#btnGenerateQuiz')?.addEventListener('click', async () => {
@@ -1625,8 +1771,10 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
 {"question":"問題文","options":["選択肢1","選択肢2","選択肢3","選択肢4"],"answerIndex":0,"explanation":"短い解説"}`;
       const resText = await callGeminiAPI([{ text: prompt }], true);
       currentQuiz = JSON.parse(resText);
-      quizAnswered = false;
-      renderQuizArea();
+      quizPickP1 = null;
+      quizPickP2 = null;
+      quizRevealed = false;
+      renderQuizArea(myName, partnerName);
     } catch (err: any) {
       alert(err.message);
     } finally {
