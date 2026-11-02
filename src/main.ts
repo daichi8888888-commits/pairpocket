@@ -7,18 +7,28 @@ let currentMonth = 'all';
 let utilViewMode: 'trend' | 'average' = 'trend'; 
 let currentTab = 'entry'; 
 
-// スケジュール・レシート用の状態
+// スケジュール・レシート・AIスマート入力用の状態
 let schedMode: 'multi' | 'span' = 'multi';
 let schedCalYear = new Date().getFullYear();
 let schedCalMonth = new Date().getMonth();
 let schedSelectedDates: string[] = [];
 let receiptState: { name: string, price: number, split: 'mine' | 'half' | 'partner' }[] = [];
+let smartInputState: { title: string, claimAmount: number, payer: 'me' | 'partner', category: string, note: string }[] = [];
 
-// ミニゲーム用
+// 献立AI用の状態
+let recipeImageBase64 = '';
+let recipeMood = '時短・簡単';
+let lastRecipeHtml = '';
+
+// ミニゲーム用の状態
+let miniGameMode: 'react' | 'bomb' | 'quiz' = 'react';
 let reactScoreP1 = 0, reactScoreP2 = 0;
 let reactGameState: 'idle' | 'waiting' | 'ready' = 'idle';
 let reactTimer: any = null;
 let bombTiles: { hasBomb: boolean; opened: boolean }[] = [];
+let quizScoreP1 = 0, quizScoreP2 = 0;
+let currentQuiz: { question: string; options: string[]; answerIndex: number; explanation: string } | null = null;
+let quizAnswered = false;
 let isProcessingSubs = false;
 
 const getToday = () => {
@@ -31,7 +41,6 @@ const yen = (n: number) => `¥${Math.round(n).toLocaleString('ja-JP')}`;
 const esc = (s: any) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
 const fmtTime = (raw: string, memo?: string, expDate?: string) => {
-  // 自動追加されたサブスクは、その日の「00:00」ぴったりとして綺麗に表示する
   if (memo === '自動追加' && expDate) {
     return `${expDate.replace(/-/g, '/')} 00:00`;
   }
@@ -64,7 +73,85 @@ function showToast(msg: string, isError = false) {
   }, 2500);
 }
 
-// ★ サブスク自動追加機能（月末対応 ＆ 0時判定対応）
+// 共通：画像ファイルを圧縮Base64に変換
+function compressImageToBase64(file: File, maxWidth = 800): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        if (width > maxWidth) {
+          height = Math.round(height * maxWidth / width);
+          width = maxWidth;
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d')!;
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.6).split(',')[1]);
+      };
+      img.onerror = reject;
+      img.src = ev.target?.result as string;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// 共通：Gemini API 呼び出し＆日本語エラーハンドリング
+async function callGeminiAPI(parts: any[], jsonMode = true): Promise<string> {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey || apiKey === '') {
+    throw new Error('APIキーが設定されていません');
+  }
+  const modelName = 'gemini-3.6-flash';
+  const bodyObj: any = { contents: [{ parts }] };
+  if (jsonMode) {
+    bodyObj.generationConfig = { responseMimeType: "application/json" };
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bodyObj)
+    });
+  } catch {
+    throw new Error('通信エラーが発生しました。電波状況を確認してください📡');
+  }
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    const errorString = JSON.stringify(errorData || {}).toLowerCase();
+    if (res.status === 503 || errorString.includes("high demand") || errorString.includes("overloaded")) {
+      throw new Error("現在AIのサーバーが大変混み合っています💥\n数分待ってからもう一度お試しください！🙏");
+    } else if (res.status === 429 || errorString.includes("quota") || errorString.includes("exhausted")) {
+      throw new Error("利用制限に達しました。しばらく時間をおいてください⏳");
+    } else if (res.status === 400 && errorString.includes("token")) {
+      throw new Error("データ量が多すぎるため処理できませんでした。短く分けてみてください🙇‍♂️");
+    } else if (res.status === 413 || errorString.includes("payload") || errorString.includes("image")) {
+      throw new Error("画像の情報量が多すぎます。少し離して撮影してください📷");
+    } else if (res.status === 404 || errorString.includes("not found")) {
+      throw new Error("AIモデルが見つかりません。設定を確認してください⚠️");
+    } else if (errorData?.error?.message) {
+      throw new Error(`エラー: ${errorData.error.message}`);
+    }
+    throw new Error(`AI通信エラー (${res.status})`);
+  }
+
+  const data = await res.json();
+  let text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  if (jsonMode) {
+    text = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+  }
+  return text;
+}
+
+// サブスク自動追加機能（月末対応 ＆ 0時判定対応）
 async function processAutoSubs() {
   if (!pair || isProcessingSubs) return;
   isProcessingSubs = true;
@@ -81,7 +168,6 @@ async function processAutoSubs() {
 
     for (let s of subs) {
       if (!s.date) continue;
-      // 「last（月末）」が選ばれているか、31日などでその月の末日を超えている場合は末日に自動調整
       const targetDay = s.date === 'last' ? lastDayOfMonth : Math.min(parseInt(s.date, 10), lastDayOfMonth);
 
       if (currentDay >= targetDay && s.lastProcessedMonth !== currentYM) {
@@ -113,7 +199,7 @@ async function processAutoSubs() {
   }
 }
 
-// リアルタイム同期機能（5秒ごとに相手の入力＆0時になったかのサブスク判定を実行）
+// リアルタイム同期機能
 async function backgroundSync() {
   if (!pair || document.visibilityState !== 'visible') return;
   
@@ -226,7 +312,7 @@ async function load() {
 
 function setTab(tab: string) {
   currentTab = tab;
-  ['entry', 'home', 'history', 'settings', 'utilities', 'schedule', 'minigame'].forEach(x => {
+  ['entry', 'home', 'history', 'settings', 'utilities', 'schedule', 'minigame', 'recipe', 'tickets'].forEach(x => {
     const el = q('#sec-' + x);
     if (el) el.style.display = (x === tab) ? 'block' : 'none';
   });
@@ -284,10 +370,13 @@ async function render(isInitial = false) {
 
   const filteredExpenses = expenses.filter(e => currentMonth === 'all' || e.expense_date?.startsWith(currentMonth));
   const filteredSettlements = settlements.filter(s => currentMonth === 'all' || new Date(s.settled_at).toISOString().startsWith(currentMonth));
-  const myName = members.find(m => m.user_id === uid)?.profiles?.display_name || '';
+  const myName = members.find(m => m.user_id === uid)?.profiles?.display_name || '自分';
+  const partnerMember = members.find(m => m.user_id !== uid);
+  const partnerName = partnerMember?.profiles?.display_name || '相手';
   
   const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
   const utils = JSON.parse(localStorage.getItem(`utils_${pair}`) || '[]');
+  const tickets = JSON.parse(localStorage.getItem(`tickets_${pair}`) || '[]');
   const schedules = JSON.parse(localStorage.getItem(`sched_${pair}`) || '[]').map((s:any) => ({
     ...s, startDate: s.startDate || s.date, endDate: s.endDate || s.date,
     startTime: s.startTime || '', endTime: s.endTime || '', recurrence: s.recurrence || 'none'
@@ -398,18 +487,23 @@ async function render(isInitial = false) {
 
   if (timeline.length === 0) timelineHtml = '<p class="muted" style="text-align: center; padding: 20px 0;">まだありません</p>';
 
-  // サブスク日付表示用のヘルパー
   const fmtSubDate = (d: any) => {
     if (!d) return '-';
     if (d === 'last') return '月末';
     return `${d}日`;
   };
 
+  const activeTickets = tickets.filter((t: any) => !t.used);
+  const usedTickets = tickets.filter((t: any) => t.used);
+
   app.innerHTML = `
     <style>
-      .sched-mode-btn { flex: 1; padding: 12px; border-radius: 12px; font-size: 13px; font-weight: bold; border: none; cursor: pointer; transition: 0.2s; white-space: nowrap;}
+      .sched-mode-btn { flex: 1; padding: 11px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; border: none; cursor: pointer; transition: 0.2s; white-space: nowrap;}
       .sched-mode-btn.active { background: #ff8fa3; color: #fff; box-shadow: 0 4px 10px #ff8fa344; }
       .sched-mode-btn.inactive { background: #fff0f3; color: #a76777; }
+      .ticket-card { background: #fffafb; border: 1px solid #f0dfe4; border-left: 6px dashed #ff8fa3; border-radius: 14px; padding: 14px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+      .chip-btn { display: inline-block; background: #fff0f3; color: #a76777; padding: 6px 12px; border-radius: 16px; font-size: 12px; font-weight: bold; margin: 0 6px 6px 0; border: 1px solid #f5dce2; cursor: pointer; }
+      .chip-btn.selected { background: #ff8fa3; color: #fff; border-color: #ff8fa3; }
     </style>
     <main class="app">
       <div class="top" style="margin-top: 10px; position: relative;">
@@ -417,18 +511,24 @@ async function render(isInitial = false) {
         <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 20px; position: absolute; right: 0; top: 0; border-radius: 12px;">☰</button>
       </div>
       
+      <!-- ☰ サイドメニュー（サブ機能を選択形式で分離） -->
       <div id="menuDrawer" class="hide" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 9999; backdrop-filter: blur(2px);">
-        <div id="menuContent" style="position: absolute; top: 0; right: 0; bottom: 0; width: 260px; background: #fffcfc; padding: 20px; box-shadow: -4px 0 15px rgba(0,0,0,0.1);">
+        <div id="menuContent" style="position: absolute; top: 0; right: 0; bottom: 0; width: 270px; background: #fffcfc; padding: 20px; box-shadow: -4px 0 15px rgba(0,0,0,0.1); overflow-y: auto;">
           <button id="closeDrawerBtn" class="ghost" style="position: absolute; top: max(20px, env(safe-area-inset-top)); right: 20px; border-radius: 50%; width: 40px; height: 40px; padding: 0; display:flex; align-items:center; justify-content:center; font-size: 20px;">×</button>
-          <div style="margin-top: calc(max(20px, env(safe-area-inset-top)) + 50px);">
-            <div class="muted" style="margin-bottom: 10px; font-weight: bold;">便利機能</div>
-            <button data-nav="minigame" class="ghost full" style="margin-bottom: 12px; text-align: left; font-size: 16px; padding: 16px; background:#fff0f3; color:#a76777; font-weight:bold;"><span style="font-size: 20px; margin-right: 8px;">🎮</span> 待ち時間ミニゲーム</button>
-            <button data-nav="schedule" class="ghost full" style="margin-bottom: 12px; text-align: left; font-size: 16px; padding: 16px;"><span style="font-size: 20px; margin-right: 8px;">📅</span> ふたりの予定</button>
-            <button data-nav="utilities" class="ghost full" style="margin-bottom: 12px; text-align: left; font-size: 16px; padding: 16px;"><span style="font-size: 20px; margin-right: 8px;">💧</span> 水道・光熱費</button>
+          <div style="margin-top: calc(max(20px, env(safe-area-inset-top)) + 45px);">
+            <div class="muted" style="margin-bottom: 10px; font-weight: bold;">🤖 AI ＆ お楽しみ機能</div>
+            <button data-nav="recipe" class="ghost full" style="margin-bottom: 10px; text-align: left; font-size: 15px; padding: 14px; background:#fff7f0; color:#b56331; font-weight:bold;"><span style="font-size: 18px; margin-right: 8px;">🍳</span> 今日のAI献立提案</button>
+            <button data-nav="tickets" class="ghost full" style="margin-bottom: 10px; text-align: left; font-size: 15px; padding: 14px; background:#fff0f6; color:#bf4f68; font-weight:bold;"><span style="font-size: 18px; margin-right: 8px;">🎟️</span> ご褒美・おねだり券</button>
+            <button data-nav="minigame" class="ghost full" style="margin-bottom: 18px; text-align: left; font-size: 15px; padding: 14px; background:#fff0f3; color:#a76777; font-weight:bold;"><span style="font-size: 18px; margin-right: 8px;">🎮</span> 待ち時間ミニゲーム</button>
+
+            <div class="muted" style="margin-bottom: 10px; font-weight: bold;">📋 暮らしの管理</div>
+            <button data-nav="schedule" class="ghost full" style="margin-bottom: 10px; text-align: left; font-size: 15px; padding: 14px;"><span style="font-size: 18px; margin-right: 8px;">📅</span> ふたりの予定</button>
+            <button data-nav="utilities" class="ghost full" style="margin-bottom: 10px; text-align: left; font-size: 15px; padding: 14px;"><span style="font-size: 18px; margin-right: 8px;">💧</span> 水道・光熱費</button>
           </div>
         </div>
       </div>
 
+      <!-- メイン①：入力タブ -->
       <section id="sec-entry">
         <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 15px; margin-bottom: 15px; padding: 0 4px;">
           <h2 style="margin: 0; font-size: 20px; color: #3e3438;">新しく追加</h2>
@@ -436,9 +536,12 @@ async function render(isInitial = false) {
         </div>
 
         <div class="card" style="margin-top: 0;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-            <label class="muted">相手への請求額</label>
-            <button id="btnReceipt" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #ffe5e9; color: #a13c52; border-radius: 12px;">📷 レシート読込</button>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 6px;">
+            <label class="muted" style="white-space: nowrap;">相手への請求額</label>
+            <div style="display: flex; gap: 6px;">
+              <button id="btnSmartInput" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #f0f4ff; color: #4361ee; border-radius: 12px; font-weight: bold;">🪄 AI文章入力</button>
+              <button id="btnReceipt" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #ffe5e9; color: #a13c52; border-radius: 12px; font-weight: bold;">📷 レシート読込</button>
+            </div>
             <input type="file" id="receiptInput" accept="image/*" style="display:none;">
           </div>
 
@@ -485,6 +588,7 @@ async function render(isInitial = false) {
         </div>
       </section>
 
+      <!-- メイン②：精算タブ -->
       <section id="sec-home">
         <div class="card hero" style="padding: 24px; text-align: center; margin-top: 20px;">
           <div class="muted" style="margin-bottom: 12px;">現在の精算</div>
@@ -503,12 +607,14 @@ async function render(isInitial = false) {
         </div>
       </section>
 
+      <!-- メイン③：履歴タブ（＋🤖AI家計簿アナリストボタン） -->
       <section id="sec-history">
-        <div class="card" style="padding: 10px 18px; margin-top: 20px;">
-          <select id="monthSelect" class="field" style="margin:0; font-weight:bold;">
+        <div class="card" style="padding: 12px 14px; margin-top: 20px; display: flex; gap: 8px; align-items: center;">
+          <select id="monthSelect" class="field" style="margin:0; font-weight:bold; flex: 1;">
             <option value="all" ${currentMonth === 'all' ? 'selected' : ''}>すべての履歴を表示</option>
             ${months.map(m => `<option value="${m}" ${currentMonth === m ? 'selected' : ''}>${m.split('-')[0]}年${m.split('-')[1]}月</option>`).join('')}
           </select>
+          <button id="btnAiAnalyst" class="ghost" style="padding: 10px 12px; font-size: 12px; font-weight: bold; background: #fff0f6; color: #bf4f68; border-radius: 12px; white-space: nowrap;">🤖 AI分析</button>
         </div>
         <div class="card history-scroll">
           <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0; z-index: 1;">タイムライン</h2>
@@ -520,22 +626,105 @@ async function render(isInitial = false) {
         </div>
       </section>
 
+      <!-- サブ機能①：🍳 今日のAI献立提案 -->
+      <section id="sec-recipe" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
+          <h2 style="margin: 0; font-size: 18px;">🍳 冷蔵庫からAI献立提案</h2>
+        </div>
+        <div class="card">
+          <label class="muted">家にある食材・使いたいもの</label>
+          <input id="recipeIngredients" class="field" placeholder="例：豚肉、キャベツ、卵、豆腐" style="margin-top: 6px;">
+
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+            <button id="btnRecipePhoto" class="ghost" style="font-size: 12px; padding: 8px 12px; background: #fff7f0; color: #b56331; border-radius: 10px; font-weight: bold;">📷 冷蔵庫・食材を撮影</button>
+            <span id="recipePhotoStatus" class="muted" style="font-size: 12px;">${recipeImageBase64 ? '✅ 写真セット済み' : '写真なしでもOK'}</span>
+            <input type="file" id="recipePhotoInput" accept="image/*" style="display:none;">
+          </div>
+
+          <label class="muted" style="display:block; margin-bottom: 6px;">今日の気分</label>
+          <div style="margin-bottom: 15px;">
+            ${['時短・簡単', 'ガッツリ満腹', 'ヘルシー', 'おつまみ・晩酌', '節約レシピ'].map(m => `<span class="chip-btn recipe-mood-chip ${recipeMood === m ? 'selected' : ''}" data-mood="${m}">${m}</span>`).join('')}
+          </div>
+
+          <button id="btnGenerateRecipe" class="primary full" style="padding: 14px; font-size: 15px;">🍳 AIに3品提案してもらう</button>
+        </div>
+
+        <div id="recipeResultWrap" class="card" style="display: ${lastRecipeHtml ? 'block' : 'none'};">
+          <h2 style="margin-top: 0;">AIのおすすめ献立</h2>
+          <div id="recipeResultContent">${lastRecipeHtml}</div>
+        </div>
+      </section>
+
+      <!-- サブ機能⑧：🎟️ ご褒美・おねだりチケット -->
+      <section id="sec-tickets" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
+          <h2 style="margin: 0; font-size: 18px;">🎟️ ご褒美・おねだりチケット</h2>
+        </div>
+
+        <div class="card" style="background: #fffafb; border: 1px solid #f0dfe4;">
+          <h2 style="margin-top: 0;">チケットを発行する</h2>
+          <label class="muted" style="display:block; margin-bottom: 6px;">定番から選ぶ</label>
+          <div style="margin-bottom: 10px;">
+            ${['☕ カフェ奢り券', '🚗 運転交代パス券', '🍳 好きな料理リクエスト券', '🍦 アイス買ってもらえる券', '💆 肩もみ10分券'].map(t => `<span class="chip-btn ticket-preset-chip" data-title="${t}">${t}</span>`).join('')}
+          </div>
+          <input id="ticketTitle" class="field" placeholder="チケット名 (例: スタバ新作奢り券)">
+          <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
+            <span class="muted" style="font-size: 12px; font-weight: bold; white-space: nowrap;">使える人：</span>
+            <select id="ticketHolder" class="field" style="margin: 0; flex: 1;">
+              ${members.map(m => `<option value="${m.user_id}" ${m.user_id !== uid ? 'selected' : ''}>${esc(name(m.user_id))} が使える券</option>`).join('')}
+            </select>
+          </div>
+          <button id="btnAddTicket" class="primary full" style="padding: 12px;">🎟️ チケットを発行！</button>
+        </div>
+
+        <div class="card">
+          <h2 style="margin-top: 0;">使えるチケット (${activeTickets.length}枚)</h2>
+          ${activeTickets.map((t: any) => `
+            <div class="ticket-card">
+              <div>
+                <div style="font-weight: 800; font-size: 15px; color: #3e3438;">${esc(t.title)}</div>
+                <div class="muted" style="font-size: 12px; margin-top: 4px;">所有者: <b style="color:#e7617d;">${esc(name(t.holder))}</b> (${esc(t.createdAt)})</div>
+              </div>
+              <div style="display: flex; gap: 6px;">
+                <button class="use-ticket-btn primary" data-id="${t.id}" style="padding: 8px 14px; font-size: 12px; border-radius: 12px;">✨ 使う</button>
+                <button class="del-ticket-btn ghost" data-id="${t.id}" style="padding: 8px 10px; font-size: 11px; color: #b5a6ac;">×</button>
+              </div>
+            </div>
+          `).join('') || '<p class="muted" style="text-align: center; padding: 15px 0;">まだ未使用のチケットはありません</p>'}
+        </div>
+
+        ${usedTickets.length > 0 ? `
+          <div class="card">
+            <h2 style="margin-top: 0; font-size: 15px; color: #9b8d93;">使用済みチケット履歴</h2>
+            ${usedTickets.slice().reverse().slice(0, 10).map((t: any) => `
+              <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 0; border-bottom: 1px solid #f5e9ed; font-size: 13px; color: #9b8d93;">
+                <div><del>${esc(t.title)}</del> (${esc(name(t.holder))})</div>
+                <div style="font-size: 11px;">使用済: ${esc(t.usedAt || '')}</div>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+      </section>
+
+      <!-- サブ機能②：🎮 待ち時間ミニゲーム（⚡反射神経 / 💣爆弾 / 🤖AIクイズ） -->
       <section id="sec-minigame" style="display: none;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
           <h2 style="margin: 0; font-size: 18px;">🎮 ふたりで待ち時間対戦</h2>
         </div>
         
-        <div style="display: flex; gap: 8px; margin-bottom: 15px;">
-          <button id="btnGameReact" class="sched-mode-btn active">⚡ 反射神経バトル</button>
-          <button id="btnGameBomb" class="sched-mode-btn inactive">💣 爆弾ルーレット</button>
+        <div style="display: flex; gap: 6px; margin-bottom: 15px;">
+          <button id="btnGameReact" class="sched-mode-btn ${miniGameMode === 'react' ? 'active' : 'inactive'}">⚡ 反射神経</button>
+          <button id="btnGameBomb" class="sched-mode-btn ${miniGameMode === 'bomb' ? 'active' : 'inactive'}">💣 爆弾</button>
+          <button id="btnGameQuiz" class="sched-mode-btn ${miniGameMode === 'quiz' ? 'active' : 'inactive'}">🤖 AIクイズ</button>
         </div>
 
-        <div id="wrapGameReact" class="card" style="padding: 12px; text-align: center;">
+        <!-- 反射神経バトル -->
+        <div id="wrapGameReact" class="card" style="padding: 12px; text-align: center; display: ${miniGameMode === 'react' ? 'block' : 'none'};">
           <div style="display:flex; justify-content:space-around; margin-bottom:12px; font-weight:bold; font-size:15px;">
-            <span style="color:#5995bd;">相手: <span id="reactScoreP2" style="font-size:20px;">0</span> 点</span>
-            <span style="color:#e7617d;">あなた: <span id="reactScoreP1" style="font-size:20px;">0</span> 点</span>
+            <span style="color:#5995bd;">${esc(partnerName)}: <span id="reactScoreP2" style="font-size:20px;">${reactScoreP2}</span> 点</span>
+            <span style="color:#e7617d;">${esc(myName)}: <span id="reactScoreP1" style="font-size:20px;">${reactScoreP1}</span> 点</span>
           </div>
-          <div style="display:flex; flex-direction:column; height:340px; border-radius:16px; overflow:hidden; border:2px solid #f0dfe4; position:relative;">
+          <div style="display:flex; flex-direction:column; height:320px; border-radius:16px; overflow:hidden; border:2px solid #f0dfe4; position:relative;">
             <button id="reactBtnP2" style="flex:1; border:none; background:#f0f4f8; font-size:18px; font-weight:bold; color:#5995bd; transform:rotate(180deg); display:flex; align-items:center; justify-content:center; cursor:pointer; user-select:none;">タップしてね (3点先取)</button>
             <div id="reactStatus" style="height:44px; background:#3e3438; color:#fff; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:bold; letter-spacing:1px;">スタートを押してね</div>
             <button id="reactBtnP1" style="flex:1; border:none; background:#fff0f3; font-size:18px; font-weight:bold; color:#e7617d; display:flex; align-items:center; justify-content:center; cursor:pointer; user-select:none;">タップしてね (3点先取)</button>
@@ -543,13 +732,48 @@ async function render(isInitial = false) {
           <button id="reactStartBtn" class="primary full" style="margin-top:14px; padding:12px; font-size:16px;">対戦スタート！</button>
         </div>
 
-        <div id="wrapGameBomb" class="card hide" style="text-align:center; padding: 20px 15px;">
+        <!-- 爆弾ルーレット -->
+        <div id="wrapGameBomb" class="card" style="text-align:center; padding: 20px 15px; display: ${miniGameMode === 'bomb' ? 'block' : 'none'};">
           <div id="bombMsg" style="font-weight:bold; color:#a76777; margin-bottom:15px; font-size:16px;">交互にタップ！ハズレ(💣)で負け！</div>
           <div id="bombGrid" style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; margin-bottom:20px;"></div>
           <button id="bombResetBtn" class="dark full" style="padding:12px;">新しく始める</button>
         </div>
+
+        <!-- 🤖 AI 4択クイズバトル -->
+        <div id="wrapGameQuiz" class="card" style="padding: 16px; display: ${miniGameMode === 'quiz' ? 'block' : 'none'};">
+          <div style="display:flex; justify-content:space-around; align-items:center; margin-bottom:14px; background:#fffafb; padding:10px; border-radius:12px; border:1px solid #f0dfe4;">
+            <div style="text-align:center;">
+              <div style="font-size:12px; color:#5995bd; font-weight:bold;">${esc(partnerName)}</div>
+              <b id="quizScoreP2Label" style="font-size:20px; color:#5995bd;">${quizScoreP2}点</b>
+              <button id="btnQuizPlusP2" class="ghost" style="padding:2px 8px; font-size:11px; margin-left:4px;">+1</button>
+            </div>
+            <div style="color:#d5c5cb; font-weight:bold;">VS</div>
+            <div style="text-align:center;">
+              <div style="font-size:12px; color:#e7617d; font-weight:bold;">${esc(myName)}</div>
+              <b id="quizScoreP1Label" style="font-size:20px; color:#e7617d;">${quizScoreP1}点</b>
+              <button id="btnQuizPlusP1" class="ghost" style="padding:2px 8px; font-size:11px; margin-left:4px;">+1</button>
+            </div>
+          </div>
+
+          <label class="muted" style="font-size:12px;">クイズのテーマ（自由入力OK）</label>
+          <div style="margin: 6px 0;">
+            ${['テーマパーク雑学', 'K-POP', '平成レトロ', 'グルメ・料理', 'ドライブ・地理', '動物雑学'].map(t => `<span class="chip-btn quiz-theme-chip" data-theme="${t}">${t}</span>`).join('')}
+          </div>
+          <div style="display:flex; gap:6px; margin-bottom:12px;">
+            <input id="quizThemeInput" class="field" placeholder="例: ディズニー、TWICE、雑学" value="テーマパーク雑学" style="margin:0; flex:1;">
+            <select id="quizDiffSelect" class="field" style="margin:0; width:105px;">
+              <option value="やさしい">やさしい</option>
+              <option value="ふつう" selected>ふつう</option>
+              <option value="マニアック">マニアック</option>
+            </select>
+          </div>
+          <button id="btnGenerateQuiz" class="primary full" style="padding:12px; font-size:15px;">🎲 AIでクイズを出題！</button>
+
+          <div id="quizPlayArea" style="margin-top: 16px;"></div>
+        </div>
       </section>
 
+      <!-- サブ機能：📅 ふたりの予定 -->
       <section id="sec-schedule">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
           <h2 style="margin: 0; font-size: 18px;">📅 ふたりの予定</h2>
@@ -645,6 +869,7 @@ async function render(isInitial = false) {
         </div>
       </section>
 
+      <!-- サブ機能：💧 水道・光熱費 -->
       <section id="sec-utilities">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
           <button id="closeUtils" class="ghost" style="padding: 10px 14px; visibility: hidden;">戻る</button>
@@ -675,7 +900,7 @@ async function render(isInitial = false) {
         </div>
       </section>
 
-      <!-- 設定タブ -->
+      <!-- メイン④：設定タブ -->
       <section id="sec-settings">
         <div class="card" style="margin-top: 20px;">
           <h2>招待コード</h2>
@@ -722,7 +947,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 17.0.0<br>（サブスク月末選択＆0時表記対応版）
+          App Version: 18.0.0<br>（5大AI＆ペア機能パック搭載版）
         </div>
       </section>
 
@@ -733,35 +958,29 @@ async function render(isInitial = false) {
         <button data-tab="settings">設定</button>
       </nav>
 
-      <!-- 編集モーダル -->
+      <!-- モーダル1：支出の編集 -->
       <div id="editModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
         <div class="card" style="width: 100%; max-width: 400px; max-height: 85vh; display: flex; flex-direction: column; overflow-y: auto;">
           <h2 style="margin-top: 0; font-size: 20px;">支出を編集</h2>
           <input type="hidden" id="editId">
-          
           <label class="muted">金額</label>
           <div class="money" style="margin-bottom: 15px;">
             <span>¥</span>
             <input type="number" id="editAmount" class="field" style="margin:0;">
           </div>
-          
           <label class="muted">内容</label>
           <input id="editTitle" class="field" style="margin-bottom: 15px;">
-          
           <label class="muted">カテゴリー</label>
           <select id="editCat" class="field" style="margin-bottom: 15px;">
             <option value="">カテゴリーなし</option>
             ${['食費', '外食', '生活', '家賃', '光熱費', '交通', '娯楽', '旅行', 'その他'].map(x => `<option value="${x}">${x}</option>`).join('')}
           </select>
-          
           <label class="muted">日付</label>
           <input type="date" id="editDate" class="field" style="margin-bottom: 15px;">
-          
           <label class="muted">立て替えた人</label>
           <select id="editPayer" class="field" style="margin-bottom: 20px;">
             ${members.map((m) => `<option value="${m.user_id}">${esc(name(m.user_id))}</option>`).join('')}
           </select>
-          
           <div style="display: flex; gap: 10px;">
             <button id="closeEditBtn" class="ghost full">キャンセル</button>
             <button id="saveEditBtn" class="primary full">保存する</button>
@@ -769,20 +988,18 @@ async function render(isInitial = false) {
         </div>
       </div>
 
+      <!-- モーダル2：レシート仕分け -->
       <div id="receiptModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
         <div class="card" style="width: 100%; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; position: relative;">
           <h2 style="margin-top: 0; font-size: 20px;">レシート仕分け</h2>
-          
           <div id="receiptLoading" style="text-align: center; padding: 40px 0; color: #a76777; font-weight: bold; font-size: 16px;">
             <div style="font-size: 40px; margin-bottom: 15px;">🤖📸</div>
             AIで解析中...<br><span style="font-size: 12px; font-weight: normal;">圧縮送信で高速化！</span>
           </div>
-
           <div id="receiptItemsWrap" style="display: none; flex: 1; overflow-y: auto; margin-bottom: 15px; padding-right: 5px;">
             <p class="muted" style="margin-top: 0; font-size: 11px;">ワンタップで負担割合を変更できます。</p>
             <div id="receiptItemsList"></div>
           </div>
-
           <div id="receiptFooter" style="display: none; border-top: 1px solid #f0dfe4; padding-top: 15px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
               <span style="font-weight: bold; color: #59464e;">相手への請求額:</span>
@@ -795,12 +1012,39 @@ async function render(isInitial = false) {
           </div>
         </div>
       </div>
+
+      <!-- モーダル3：🪄 AIスマート文章入力（機能③） -->
+      <div id="smartInputModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
+        <div class="card" style="width: 100%; max-width: 420px; max-height: 85vh; display: flex; flex-direction: column; overflow-y: auto;">
+          <h2 style="margin-top: 0; font-size: 19px;">🪄 AIスマート文章入力</h2>
+          <p class="muted" style="margin-top: 0; font-size: 12px;">LINE感覚でしゃべるように入力すると、AIが自動で「誰が・何に・いくら請求か」を分解します（音声入力もおすすめ！）。</p>
+          <textarea id="smartInputText" class="field" rows="3" placeholder="例：私がランチ2400円払って割り勘。相手がガソリン代3600円出して割り勘。私が相手のカフェ代600円を立て替えた。" style="resize: none;"></textarea>
+          <button id="btnRunSmartParse" class="dark full" style="margin-bottom: 12px;">🤖 AIで解析する</button>
+          
+          <div id="smartInputPreview" style="display: none; border-top: 1px solid #f0dfe4; padding-top: 12px; margin-bottom: 12px;"></div>
+
+          <div style="display: flex; gap: 10px;">
+            <button id="closeSmartInputBtn" class="ghost full">閉じる</button>
+            <button id="applySmartInputBtn" class="primary full" style="display: none;">一括で登録する</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- モーダル4：📊 AI家計簿アナリスト（機能④） -->
+      <div id="aiReportModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
+        <div class="card" style="width: 100%; max-width: 420px; max-height: 85vh; display: flex; flex-direction: column; overflow-y: auto;">
+          <h2 style="margin-top: 0; font-size: 19px;">🤖 AI家計簿アナリスト</h2>
+          <div id="aiReportContent" style="font-size: 14px; line-height: 1.7; color: #3e3438; margin-bottom: 18px;"></div>
+          <button id="closeAiReportBtn" class="primary full">閉じる</button>
+        </div>
+      </div>
     </main>
   `;
 
-  wire(stateObj);
+  wire(stateObj, myName, partnerName, partnerMember?.user_id || uid, filteredExpenses);
   setTab(currentTab); 
   showCalc();
+  if (currentQuiz) renderQuizArea();
 
   if (isInitial && currentTab === 'entry') {
     setTimeout(() => q('#amount')?.focus(), 100);
@@ -889,6 +1133,45 @@ function renderBombGame() {
   });
 }
 
+function renderQuizArea() {
+  const area = q('#quizPlayArea');
+  if (!area || !currentQuiz) return;
+
+  area.innerHTML = `
+    <div style="background:#fffafb; border:1px solid #f0dfe4; border-radius:14px; padding:14px;">
+      <div style="font-weight:bold; font-size:15px; color:#3e3438; margin-bottom:12px; line-height:1.5;">Q. ${esc(currentQuiz.question)}</div>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        ${currentQuiz.options.map((opt, idx) => {
+          let bg = '#fff'; let col = '#3e3438'; let border = '#f0dfe4';
+          if (quizAnswered) {
+            if (idx === currentQuiz!.answerIndex) { bg = '#e8f5e9'; col = '#2e7d32'; border = '#4caf50'; }
+          }
+          return `<button class="quiz-opt-btn" data-idx="${idx}" style="text-align:left; padding:12px; border-radius:10px; border:2px solid ${border}; background:${bg}; color:${col}; font-weight:bold; font-size:14px; cursor:pointer;">${idx + 1}. ${esc(opt)}</button>`;
+        }).join('')}
+      </div>
+      ${quizAnswered ? `
+        <div style="margin-top:12px; padding:10px; background:#fff0f3; border-radius:10px; font-size:13px; color:#59464e;">
+          <b>💡 正解は「${currentQuiz.answerIndex + 1}」！</b><br>${esc(currentQuiz.explanation)}
+        </div>
+      ` : ''}
+    </div>
+  `;
+
+  document.querySelectorAll('.quiz-opt-btn').forEach((b: any) => {
+    b.onclick = () => {
+      if (quizAnswered) return;
+      quizAnswered = true;
+      const picked = Number(b.dataset.idx);
+      if (picked === currentQuiz?.answerIndex) {
+        showToast('⭕ 大正解！！正解した人に+1しよう！');
+      } else {
+        showToast('❌ ざんねん！不正解！', true);
+      }
+      renderQuizArea();
+    };
+  });
+}
+
 function renderReceiptItems() {
   q('#receiptLoading').style.display = 'none';
   q('#receiptItemsWrap').style.display = 'block';
@@ -945,10 +1228,10 @@ function calc() {
 
 function showCalc() {
   const n = calc();
-  q('#result').textContent = Number.isFinite(n) ? `計算結果：${yen(n)}` : '計算式を確認';
+  if (q('#result')) q('#result').textContent = Number.isFinite(n) ? `計算結果：${yen(n)}` : '計算式を確認';
 }
 
-function wire(state: any) {
+function wire(state: any, myName: string, partnerName: string, partnerUid: string, filteredExpenses: any[]) {
   q('#menuBtn')?.addEventListener('click', () => q('#menuDrawer').classList.remove('hide'));
   q('#closeDrawerBtn')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
   q('#menuDrawer')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
@@ -958,29 +1241,284 @@ function wire(state: any) {
     b.onclick = () => { 
       setTab(b.dataset.nav); 
       if(b.dataset.nav === 'schedule') renderSchedUI(); 
-      if(b.dataset.nav === 'minigame') initBombGame();
+      if(b.dataset.nav === 'minigame' && bombTiles.length === 0) initBombGame();
     };
   });
   document.querySelectorAll('[data-tab]').forEach((b: any) => {
     b.onclick = () => { setTab(b.dataset.tab); };
   });
 
-  q('#btnGameReact')?.addEventListener('click', () => {
-    q('#wrapGameReact').style.display = 'block';
-    q('#wrapGameBomb').style.display = 'none';
-    q('#btnGameReact').className = 'sched-mode-btn active';
-    q('#btnGameBomb').className = 'sched-mode-btn inactive';
+  // ----------------------------------------
+  // 機能③：🪄 AIスマート文章入力
+  // ----------------------------------------
+  q('#btnSmartInput')?.addEventListener('click', () => {
+    smartInputState = [];
+    q('#smartInputPreview').style.display = 'none';
+    q('#applySmartInputBtn').style.display = 'none';
+    q('#smartInputModal').style.display = 'flex';
   });
-  q('#btnGameBomb')?.addEventListener('click', () => {
-    q('#wrapGameReact').style.display = 'none';
-    q('#wrapGameBomb').style.display = 'block';
-    q('#btnGameReact').className = 'sched-mode-btn inactive';
-    q('#btnGameBomb').className = 'sched-mode-btn active';
-    initBombGame();
+  q('#closeSmartInputBtn')?.addEventListener('click', () => {
+    q('#smartInputModal').style.display = 'none';
   });
+  q('#btnRunSmartParse')?.addEventListener('click', async () => {
+    const textInput = val('#smartInputText').trim();
+    if (!textInput) return showToast('⚠️ 文章を入力してください', true);
+    const btn = q('#btnRunSmartParse');
+    btn.textContent = '🤖 解析中...';
+    btn.disabled = true;
+
+    try {
+      const prompt = `以下の文章からペアの支出リストを抽出しJSON配列のみ出力せよ。
+ルール:
+- claimAmountは「立て替えた人が相手に請求する金額(整数)」。割り勘・折半や特に指定がない共有支出は支払総額の半分(50%)、相手の分を全額立て替えた場合は100%にする。
+- payerは私が払ったなら"me"、相手(${partnerName})が払ったなら"partner"。
+- categoryは["食費","外食","生活","家賃","光熱費","交通","娯楽","旅行","その他"]のいずれか。
+出力例: [{"title":"カフェ","claimAmount":700,"payer":"me","category":"外食","note":"1400円の割り勘"}]
+入力文: ${textInput}`;
+
+      const resText = await callGeminiAPI([{ text: prompt }], true);
+      const parsed = JSON.parse(resText);
+      if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('支出が読み取れませんでした');
+      smartInputState = parsed;
+
+      q('#smartInputPreview').style.display = 'block';
+      q('#smartInputPreview').innerHTML = `<div class="muted" style="font-size:11px; margin-bottom:6px;">解析結果（${smartInputState.length}件）：</div>` + smartInputState.map(item => `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #f5e9ed; font-size:13px;">
+          <div>
+            <b>${esc(item.title)}</b> <span style="font-size:11px; color:#a76777;">(${esc(item.category)})</span><br>
+            <span class="muted" style="font-size:11px;">支払: ${item.payer === 'partner' ? esc(partnerName) : esc(myName)} / ${esc(item.note || '')}</span>
+          </div>
+          <b style="color:#e7617d; font-size:15px;">請求 ${yen(item.claimAmount)}</b>
+        </div>
+      `).join('');
+      q('#applySmartInputBtn').style.display = 'block';
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      btn.textContent = '🤖 AIで解析する';
+      btn.disabled = false;
+    }
+  });
+
+  q('#applySmartInputBtn')?.addEventListener('click', async () => {
+    if (smartInputState.length === 0) return;
+    const date = getToday();
+    for (const item of smartInputState) {
+      const payerId = item.payer === 'partner' ? partnerUid : uid;
+      const amt = Math.round(Number(item.claimAmount) || 0);
+      if (amt <= 0) continue;
+      expenses.unshift({
+        id: 'temp-' + Date.now() + Math.random(),
+        pair_id: pair,
+        title: item.title || '支出',
+        amount: amt,
+        payer_id: payerId,
+        category: item.category || 'その他',
+        expense_date: date,
+        created_at: new Date().toISOString()
+      });
+      await supabase.rpc('add_shared_expense', {
+        input_pair_id: pair, input_title: item.title || '支出', input_amount: amt, input_payer_id: payerId, input_category: item.category || 'その他', input_expense_date: date, input_memo: null
+      });
+    }
+    q('#smartInputModal').style.display = 'none';
+    showToast(`✅ ${smartInputState.length}件を一括追加しました！`);
+    await load();
+    render(false);
+  });
+
+  // ----------------------------------------
+  // 機能④：📊 AI家計簿アナリスト
+  // ----------------------------------------
+  q('#btnAiAnalyst')?.addEventListener('click', async () => {
+    const validExps = filteredExpenses.filter(e => !(typeof e.title === 'string' && e.title.startsWith('[削除済]')));
+    if (validExps.length === 0) return showToast('⚠️ 分析する履歴がありません', true);
+
+    q('#aiReportModal').style.display = 'flex';
+    q('#aiReportContent').innerHTML = `<div style="text-align:center; padding:30px 0; color:#a76777; font-weight:bold;">🤖📊 AIがふたりの家計簿を分析中...</div>`;
+
+    try {
+      const summaryLines = validExps.slice(0, 60).map(e => `${e.expense_date}: ${e.title} (請求額¥${e.amount}, カテゴリ:${e.category || '未分類'})`).join('\n');
+      const prompt = `あなたは優しいカップル専属の家計簿アドバイザーです。以下の支出データ（相手への請求額ベース）を分析し、日本語で温かく実用的な振り返りレポートを作成してください。
+見出しには絵文字を使い、①全体傾向のまとめ、②褒めポイント、③来月に向けた無理のない節約・お出かけアイディアの3点を簡潔にまとめてください。マークダウンの**は使わずプレーンで見やすい改行にしてください。\n\n${summaryLines}`;
+
+      const report = await callGeminiAPI([{ text: prompt }], false);
+      q('#aiReportContent').innerHTML = esc(report).replace(/\n/g, '<br>');
+    } catch (err: any) {
+      q('#aiReportContent').innerHTML = `<span style="color:#bf4f68;">${esc(err.message)}</span>`;
+    }
+  });
+  q('#closeAiReportBtn')?.addEventListener('click', () => {
+    q('#aiReportModal').style.display = 'none';
+  });
+
+  // ----------------------------------------
+  // 機能①：🍳 冷蔵庫からAI献立提案
+  // ----------------------------------------
+  document.querySelectorAll('.recipe-mood-chip').forEach((chip: any) => {
+    chip.onclick = () => {
+      recipeMood = chip.dataset.mood;
+      document.querySelectorAll('.recipe-mood-chip').forEach((c: any) => c.classList.remove('selected'));
+      chip.classList.add('selected');
+    };
+  });
+
+  q('#btnRecipePhoto')?.addEventListener('click', () => q('#recipePhotoInput')?.click());
+  q('#recipePhotoInput')?.addEventListener('change', async (e: any) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    q('#recipePhotoStatus').textContent = '圧縮中...';
+    recipeImageBase64 = await compressImageToBase64(file, 700);
+    q('#recipePhotoStatus').textContent = '✅ 写真セット済み';
+  });
+
+  q('#btnGenerateRecipe')?.addEventListener('click', async () => {
+    const ing = val('#recipeIngredients').trim();
+    if (!ing && !recipeImageBase64) return showToast('⚠️ 食材を入力するか写真を撮影してください', true);
+
+    const btn = q('#btnGenerateRecipe');
+    btn.textContent = '🍳 AIシェフが考案中...';
+    btn.disabled = true;
+
+    try {
+      const parts: any[] = [{
+        text: `食材「${ing || '画像の食材'}」と気分「${recipeMood}」に合う、ふたり暮らし向けの美味しい献立を3品提案しJSON配列のみ出力せよ。
+[{"name":"料理名","time":"15分","ingredients":"主な材料","steps":"簡単な作り方(2〜3文)"}]`
+      }];
+      if (recipeImageBase64) {
+        parts.push({ inlineData: { mimeType: 'image/jpeg', data: recipeImageBase64 } });
+      }
+      const resText = await callGeminiAPI(parts, true);
+      const dishes = JSON.parse(resText);
+      lastRecipeHtml = dishes.map((d: any) => `
+        <div style="background:#fffafb; border:1px solid #f0dfe4; border-radius:12px; padding:12px; margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <b style="font-size:15px; color:#e7617d;">🍽️ ${esc(d.name)}</b>
+            <span style="font-size:11px; background:#fff0f3; color:#a76777; padding:3px 8px; border-radius:8px; font-weight:bold;">⏱ ${esc(d.time)}</span>
+          </div>
+          <div style="font-size:12px; color:#59464e; margin-bottom:4px;"><b>材料:</b> ${esc(d.ingredients)}</div>
+          <div style="font-size:12px; color:#3e3438; line-height:1.5;">${esc(d.steps)}</div>
+        </div>
+      `).join('');
+      q('#recipeResultWrap').style.display = 'block';
+      q('#recipeResultContent').innerHTML = lastRecipeHtml;
+      recipeImageBase64 = '';
+      q('#recipePhotoStatus').textContent = '写真なしでもOK';
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      btn.textContent = '🍳 AIに3品提案してもらう';
+      btn.disabled = false;
+    }
+  });
+
+  // ----------------------------------------
+  // 機能⑧：🎟️ ご褒美・おねだりチケット
+  // ----------------------------------------
+  document.querySelectorAll('.ticket-preset-chip').forEach((chip: any) => {
+    chip.onclick = () => {
+      q('#ticketTitle').value = chip.dataset.title;
+    };
+  });
+
+  q('#btnAddTicket')?.addEventListener('click', () => {
+    const title = val('#ticketTitle').trim();
+    const holder = val('#ticketHolder');
+    if (!title) return showToast('⚠️ チケット名を入力してください', true);
+    const tickets = JSON.parse(localStorage.getItem(`tickets_${pair}`) || '[]');
+    tickets.push({
+      id: Date.now().toString(),
+      title,
+      holder,
+      used: false,
+      createdAt: getToday().replace(/-/g, '/')
+    });
+    localStorage.setItem(`tickets_${pair}`, JSON.stringify(tickets));
+    showToast('🎟️ チケットを発行しました！');
+    render(false);
+  });
+
+  document.querySelectorAll('.use-ticket-btn').forEach((b: any) => {
+    b.onclick = () => {
+      if (!confirm('このチケットを使用済みにしますか？✨')) return;
+      const tickets = JSON.parse(localStorage.getItem(`tickets_${pair}`) || '[]');
+      const target = tickets.find((t: any) => t.id === b.dataset.id);
+      if (target) {
+        target.used = true;
+        target.usedAt = getToday().replace(/-/g, '/');
+      }
+      localStorage.setItem(`tickets_${pair}`, JSON.stringify(tickets));
+      showToast('🎉 チケットを使いました！');
+      render(false);
+    };
+  });
+
+  document.querySelectorAll('.del-ticket-btn').forEach((b: any) => {
+    b.onclick = () => {
+      if (!confirm('このチケットを削除しますか？')) return;
+      let tickets = JSON.parse(localStorage.getItem(`tickets_${pair}`) || '[]');
+      tickets = tickets.filter((t: any) => t.id !== b.dataset.id);
+      localStorage.setItem(`tickets_${pair}`, JSON.stringify(tickets));
+      render(false);
+    };
+  });
+
+  // ----------------------------------------
+  // 機能②：🎮 ミニゲーム（反射神経・爆弾・🤖AIクイズ）
+  // ----------------------------------------
+  const switchMiniGame = (mode: 'react' | 'bomb' | 'quiz') => {
+    miniGameMode = mode;
+    q('#wrapGameReact').style.display = mode === 'react' ? 'block' : 'none';
+    q('#wrapGameBomb').style.display = mode === 'bomb' ? 'block' : 'none';
+    q('#wrapGameQuiz').style.display = mode === 'quiz' ? 'block' : 'none';
+    q('#btnGameReact').className = `sched-mode-btn ${mode === 'react' ? 'active' : 'inactive'}`;
+    q('#btnGameBomb').className = `sched-mode-btn ${mode === 'bomb' ? 'active' : 'inactive'}`;
+    q('#btnGameQuiz').className = `sched-mode-btn ${mode === 'quiz' ? 'active' : 'inactive'}`;
+    if (mode === 'bomb' && bombTiles.length === 0) initBombGame();
+  };
+
+  q('#btnGameReact')?.addEventListener('click', () => switchMiniGame('react'));
+  q('#btnGameBomb')?.addEventListener('click', () => switchMiniGame('bomb'));
+  q('#btnGameQuiz')?.addEventListener('click', () => switchMiniGame('quiz'));
+
   q('#bombResetBtn')?.addEventListener('click', () => {
     q('#bombMsg').textContent = '交互にタップ！ハズレ(💣)で負け！';
     initBombGame();
+  });
+
+  // AIクイズ操作
+  document.querySelectorAll('.quiz-theme-chip').forEach((chip: any) => {
+    chip.onclick = () => { q('#quizThemeInput').value = chip.dataset.theme; };
+  });
+  q('#btnQuizPlusP1')?.addEventListener('click', () => {
+    quizScoreP1++;
+    q('#quizScoreP1Label').textContent = `${quizScoreP1}点`;
+  });
+  q('#btnQuizPlusP2')?.addEventListener('click', () => {
+    quizScoreP2++;
+    q('#quizScoreP2Label').textContent = `${quizScoreP2}点`;
+  });
+
+  q('#btnGenerateQuiz')?.addEventListener('click', async () => {
+    const theme = val('#quizThemeInput').trim() || '雑学';
+    const diff = val('#quizDiffSelect');
+    const btn = q('#btnGenerateQuiz');
+    btn.textContent = '🤖 クイズを作成中...';
+    btn.disabled = true;
+
+    try {
+      const prompt = `テーマ「${theme}」（難易度：${diff}）に関する面白い4択クイズを1問作成しJSONのみ出力せよ。
+{"question":"問題文","options":["選択肢1","選択肢2","選択肢3","選択肢4"],"answerIndex":0,"explanation":"短い解説"}`;
+      const resText = await callGeminiAPI([{ text: prompt }], true);
+      currentQuiz = JSON.parse(resText);
+      quizAnswered = false;
+      renderQuizArea();
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      btn.textContent = '🎲 次のクイズを出題！';
+      btn.disabled = false;
+    }
   });
 
   const nextReactRound = () => {
@@ -1005,12 +1543,12 @@ function wire(state: any) {
     if (reactGameState === 'waiting') {
       clearTimeout(reactTimer);
       reactGameState = 'idle';
-      const winner = player === 'P1' ? '相手' : 'あなた';
+      const winner = player === 'P1' ? partnerName : myName;
       q('#reactStatus').textContent = `フライング！ ${winner}に1点！`;
       if (player === 'P1') reactScoreP2++; else reactScoreP1++;
     } else if (reactGameState === 'ready') {
       reactGameState = 'idle';
-      const winner = player === 'P1' ? 'あなた' : '相手';
+      const winner = player === 'P1' ? myName : partnerName;
       q('#reactStatus').textContent = `${winner}の勝ち！`;
       if (player === 'P1') reactScoreP1++; else reactScoreP2++;
     }
@@ -1018,7 +1556,7 @@ function wire(state: any) {
     q('#reactScoreP2').textContent = String(reactScoreP2);
 
     if (reactScoreP1 >= 3 || reactScoreP2 >= 3) {
-      const champ = reactScoreP1 >= 3 ? 'あなた' : '相手';
+      const champ = reactScoreP1 >= 3 ? myName : partnerName;
       q('#reactStatus').textContent = `🏆 ${champ}の完全勝利！！`;
       q('#reactStartBtn').textContent = 'もう一回遊ぶ';
     } else {
@@ -1037,6 +1575,9 @@ function wire(state: any) {
   q('#reactBtnP1')?.addEventListener('click', () => handleReactTap('P1'));
   q('#reactBtnP2')?.addEventListener('click', () => handleReactTap('P2'));
 
+  // ----------------------------------------
+  // スケジュール・レシート・既存の全イベント
+  // ----------------------------------------
   renderSchedUI();
   q('#btnModeMulti')?.addEventListener('click', () => { schedMode = 'multi'; renderSchedUI(); });
   q('#btnModeSpan')?.addEventListener('click', () => { schedMode = 'span'; renderSchedUI(); });
@@ -1116,99 +1657,32 @@ function wire(state: any) {
     };
   });
 
-  // レシート読み込み＆日本語エラーハンドリング
+  // レシート読み込み
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
     if (!file) return;
-    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-    if (!apiKey || apiKey === '') {
-      showToast('⚠️ APIキーが設定されていません', true);
-      return;
-    }
 
     q('#receiptModal').style.display = 'flex';
     q('#receiptLoading').style.display = 'block';
     if(q('#receiptItemsWrap')) q('#receiptItemsWrap').style.display = 'none';
     if(q('#receiptFooter')) q('#receiptFooter').style.display = 'none';
     
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const img = new Image();
-      img.onload = async () => {
-        const canvas = document.createElement('canvas');
-        let width = img.width;
-        let height = img.height;
-        const MAX_WIDTH = 800; 
-        if (width > MAX_WIDTH) {
-          height = Math.round(height * MAX_WIDTH / width);
-          width = MAX_WIDTH;
-        }
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d')!;
-        ctx.drawImage(img, 0, 0, width, height);
-        
-        const base64 = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
-        
-        try {
-          const modelName = 'gemini-3.6-flash';
-          q('#receiptLoading').innerHTML = `<div style="font-size: 40px; margin-bottom: 15px;">🤖📸</div>AIで解析中...<br><span style="font-size: 12px; font-weight: normal;">圧縮送信で高速化！</span>`;
-
-          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ parts: [
-                  { text: "レシートの品目と金額のみをJSON配列で出力。小計・合計は除外。JSON以外出力禁止。\n[{\"name\":\"品名\",\"price\":100}]" },
-                  { inlineData: { mimeType: 'image/jpeg', data: base64 } }
-                ] }],
-              generationConfig: { responseMimeType: "application/json" }
-            })
-          });
-          
-          if (!res.ok) {
-            const errorData = await res.json().catch(() => ({}));
-            throw { status: res.status, details: errorData };
-          }
-          
-          const data = await res.json();
-          let text = data.candidates[0].content.parts[0].text;
-          text = text.replace(/```json/gi, '').replace(/```/g, '').trim();
-          const items = JSON.parse(text);
-          if (!Array.isArray(items)) throw new Error('Invalid JSON format');
-          
-          receiptState = items.map((i:any) => ({...i, split: 'half'}));
-          renderReceiptItems();
-
-        } catch (err: any) {
-          let userMessage = "レシートの読み取りに失敗しました。";
-          const errorString = JSON.stringify(err.details || err).toLowerCase();
-          
-          if (err.status === 503 || errorString.includes("high demand") || errorString.includes("overloaded")) {
-             userMessage = "現在AIのサーバーが大変混み合っています💥\n数分待ってからもう一度お試しください！🙏";
-          } else if (err.status === 429 || errorString.includes("quota") || errorString.includes("exhausted")) {
-             userMessage = "利用制限に達しました。しばらく時間をおいてください⏳";
-          } else if (err.status === 400 && errorString.includes("token")) {
-             userMessage = "レシートが長すぎるため読み取れませんでした。短く分けてみてください🙇‍♂️";
-          } else if (err.status === 413 || errorString.includes("payload") || errorString.includes("image")) {
-             userMessage = "画像の情報量が多すぎます。少し離して撮影してください📷";
-          } else if (err.status === 404 || errorString.includes("not found")) {
-             userMessage = "AIモデルが見つかりません。設定を確認してください⚠️";
-          } else if (err.details && err.details.error && err.details.error.message) {
-             userMessage = `エラー: ${err.details.error.message}`;
-          } else if (err.message) {
-             userMessage = `エラー: ${err.message}`;
-          }
-
-          alert(userMessage);
-          q('#receiptModal').style.display = 'none';
-        }
-        q('#receiptInput').value = '';
-      };
-      img.src = ev.target?.result as string;
-    };
-    reader.readAsDataURL(file);
+    try {
+      const base64 = await compressImageToBase64(file, 800);
+      const text = await callGeminiAPI([
+        { text: "レシートの品目と金額のみをJSON配列で出力。小計・合計は除外。JSON以外出力禁止。\n[{\"name\":\"品名\",\"price\":100}]" },
+        { inlineData: { mimeType: 'image/jpeg', data: base64 } }
+      ], true);
+      const items = JSON.parse(text);
+      if (!Array.isArray(items)) throw new Error('レシートの形式を読み取れませんでした');
+      receiptState = items.map((i:any) => ({...i, split: 'half'}));
+      renderReceiptItems();
+    } catch (err: any) {
+      alert(err.message);
+      q('#receiptModal').style.display = 'none';
+    }
+    q('#receiptInput').value = '';
   });
 
   q('#closeReceiptBtn')?.addEventListener('click', () => { q('#receiptModal').style.display = 'none'; });
