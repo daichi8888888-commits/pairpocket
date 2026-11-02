@@ -15,11 +15,11 @@ let schedSelectedDates: string[] = [];
 let receiptState: { name: string, price: number, split: 'mine' | 'half' | 'partner' }[] = [];
 
 // ミニゲーム用
-let miniGameMode: 'react' | 'bomb' = 'react';
 let reactScoreP1 = 0, reactScoreP2 = 0;
 let reactGameState: 'idle' | 'waiting' | 'ready' = 'idle';
 let reactTimer: any = null;
 let bombTiles: { hasBomb: boolean; opened: boolean }[] = [];
+let isProcessingSubs = false;
 
 const getToday = () => {
   const d = new Date();
@@ -30,7 +30,11 @@ const getToday = () => {
 const yen = (n: number) => `¥${Math.round(n).toLocaleString('ja-JP')}`;
 const esc = (s: any) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
-const fmtTime = (raw: string) => {
+const fmtTime = (raw: string, memo?: string, expDate?: string) => {
+  // 自動追加されたサブスクは、その日の「00:00」ぴったりとして綺麗に表示する
+  if (memo === '自動追加' && expDate) {
+    return `${expDate.replace(/-/g, '/')} 00:00`;
+  }
   if (!raw) return '';
   const d = new Date(raw);
   if (isNaN(d.getTime())) return raw;
@@ -60,50 +64,61 @@ function showToast(msg: string, isError = false) {
   }, 2500);
 }
 
-// サブスク自動追加機能
+// ★ サブスク自動追加機能（月末対応 ＆ 0時判定対応）
 async function processAutoSubs() {
-  const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
-  let addedNames = [];
-  const d = new Date();
-  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-  const todayStr = d.toISOString().slice(0, 10); 
-  const currentYM = todayStr.slice(0, 7); 
-  const currentDay = parseInt(todayStr.slice(8, 10), 10);
-  const lastDayOfMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  if (!pair || isProcessingSubs) return;
+  isProcessingSubs = true;
 
-  for (let s of subs) {
-    if (!s.date) continue;
-    const subDay = parseInt(s.date, 10);
-    const targetDay = Math.min(subDay, lastDayOfMonth);
+  try {
+    const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
+    let addedNames = [];
+    const d = new Date();
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    const todayStr = d.toISOString().slice(0, 10); 
+    const currentYM = todayStr.slice(0, 7); 
+    const currentDay = parseInt(todayStr.slice(8, 10), 10);
+    const lastDayOfMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
 
-    if (currentDay >= targetDay && s.lastProcessedMonth !== currentYM) {
-      const { error } = await supabase.rpc('add_shared_expense', {
-        input_pair_id: pair, 
-        input_title: `🔄 ${s.title}`, 
-        input_amount: Number(s.amount), 
-        input_payer_id: s.payer_id, 
-        input_category: '生活',
-        input_expense_date: `${currentYM}-${String(targetDay).padStart(2, '0')}`,
-        input_memo: '自動追加'
-      });
-      if (!error) {
-        s.lastProcessedMonth = currentYM;
-        addedNames.push(s.title);
+    for (let s of subs) {
+      if (!s.date) continue;
+      // 「last（月末）」が選ばれているか、31日などでその月の末日を超えている場合は末日に自動調整
+      const targetDay = s.date === 'last' ? lastDayOfMonth : Math.min(parseInt(s.date, 10), lastDayOfMonth);
+
+      if (currentDay >= targetDay && s.lastProcessedMonth !== currentYM) {
+        const targetDateStr = `${currentYM}-${String(targetDay).padStart(2, '0')}`;
+        const { error } = await supabase.rpc('add_shared_expense', {
+          input_pair_id: pair, 
+          input_title: `🔄 ${s.title}`, 
+          input_amount: Number(s.amount), 
+          input_payer_id: s.payer_id, 
+          input_category: '生活',
+          input_expense_date: targetDateStr,
+          input_memo: '自動追加'
+        });
+        if (!error) {
+          s.lastProcessedMonth = currentYM;
+          addedNames.push(s.title);
+        }
       }
     }
-  }
-  
-  if (addedNames.length > 0) {
-    localStorage.setItem(`subs_${pair}`, JSON.stringify(subs));
-    await load();
-    setTimeout(() => showToast(`🔄 自動追加: ${addedNames.join(', ')}`), 800);
-    render(false);
+    
+    if (addedNames.length > 0) {
+      localStorage.setItem(`subs_${pair}`, JSON.stringify(subs));
+      await load();
+      setTimeout(() => showToast(`🔄 自動追加: ${addedNames.join(', ')}`), 500);
+      render(false);
+    }
+  } finally {
+    isProcessingSubs = false;
   }
 }
 
-// リアルタイム同期機能
+// リアルタイム同期機能（5秒ごとに相手の入力＆0時になったかのサブスク判定を実行）
 async function backgroundSync() {
   if (!pair || document.visibilityState !== 'visible') return;
+  
+  await processAutoSubs();
+
   const oldExpLen = expenses.length;
   const oldSetLen = settlements.length;
   
@@ -333,9 +348,9 @@ async function render(isInitial = false) {
 
   let timelineHtml = '';
   timeline.forEach(item => {
-    const tStr = fmtTime(item.raw); 
     if (item.type === 'settlement') {
       const s = item.data;
+      const tStr = fmtTime(item.raw);
       timelineHtml += `<div style="border-top: 2px dashed #d95875; margin: 28px 0 20px; position: relative;">
         <span style="position: absolute; top: -11px; left: 50%; transform: translateX(-50%); background: #fff; padding: 0 12px; color: #d95875; font-size: 11px; font-weight: bold; white-space: nowrap; border-radius: 12px; border: 1px solid #d95875;">
           ✂️ 精算完了: ${yen(s.amount)} (${tStr})
@@ -343,6 +358,7 @@ async function render(isInitial = false) {
       </div>`;
     } else {
       const e = item.data;
+      const tStr = fmtTime(item.raw, e.memo, e.expense_date);
       const isDel = typeof e.title === 'string' && e.title.startsWith('[削除済]');
       
       let editInfoHtml = '';
@@ -381,6 +397,13 @@ async function render(isInitial = false) {
   });
 
   if (timeline.length === 0) timelineHtml = '<p class="muted" style="text-align: center; padding: 20px 0;">まだありません</p>';
+
+  // サブスク日付表示用のヘルパー
+  const fmtSubDate = (d: any) => {
+    if (!d) return '-';
+    if (d === 'last') return '月末';
+    return `${d}日`;
+  };
 
   app.innerHTML = `
     <style>
@@ -661,20 +684,25 @@ async function render(isInitial = false) {
 
         <div class="card">
           <h2>サブスク・定額の管理</h2>
-          <p class="muted" style="font-size:12px; margin-top:0;">登録しておくと指定日に自動追加されます。</p>
+          <p class="muted" style="font-size:12px; margin-top:0;">指定日の0時以降に自動追加されます。「月末」を選ぶと30日や28日の月も自動で末日に調整されます。</p>
           <div id="subsList" style="margin-bottom: 12px;">
-            ${subs.map((s:any) => `<div style="display:flex; justify-content:space-between; align-items:center; padding: 10px 0; border-bottom:1px solid #f5e9ed;"><div><b style="font-size:14px;">${esc(s.title)}</b><br><span class="muted" style="font-size:12px;">${yen(s.amount)} (毎月${s.date ? s.date + '日' : '-'} / 支払: ${esc(name(s.payer_id))})</span></div><button class="del-sub ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:12px; border-radius: 8px;">削除</button></div>`).join('') || '<p class="muted" style="text-align:center; padding: 10px 0;">登録されていません</p>'}
+            ${subs.map((s:any) => `<div style="display:flex; justify-content:space-between; align-items:center; padding: 10px 0; border-bottom:1px solid #f5e9ed;"><div><b style="font-size:14px;">${esc(s.title)}</b><br><span class="muted" style="font-size:12px;">${yen(s.amount)} (毎月${fmtSubDate(s.date)} / 支払: ${esc(name(s.payer_id))})</span></div><button class="del-sub ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:12px; border-radius: 8px;">削除</button></div>`).join('') || '<p class="muted" style="text-align:center; padding: 10px 0;">登録されていません</p>'}
           </div>
           <div style="background: #fffafb; padding: 12px; border-radius: 12px; border: 1px solid #f0dfe4;">
             <label class="muted" style="font-size:12px;">新しいサブスクを登録</label>
             <div style="display:flex; gap:6px; margin-top:4px;">
-              <input id="subTitle" class="field" placeholder="名前" style="margin:0; flex:1;">
-              <input id="subAmount" type="number" class="field" placeholder="金額" style="margin:0; width:90px;">
-              <input id="subDate" type="number" class="field" placeholder="日" min="1" max="31" style="margin:0; width:60px;">
+              <input id="subTitle" class="field" placeholder="名前 (例: 家賃)" style="margin:0; flex:1;">
+              <input id="subAmount" type="number" class="field" placeholder="金額" style="margin:0; width:95px;">
             </div>
-            <select id="subPayer" class="field" style="margin:8px 0 0 0;">
-              ${members.map((m) => `<option value="${m.user_id}" ${m.user_id === uid ? 'selected' : ''}>${esc(name(m.user_id))}が支払う</option>`).join('')}
-            </select>
+            <div style="display:flex; gap:6px; margin-top:8px;">
+              <select id="subDate" class="field" style="margin:0; width:130px;">
+                <option value="last">毎月 月末</option>
+                ${Array.from({length: 31}, (_, i) => i + 1).map(d => `<option value="${d}">毎月 ${d}日</option>`).join('')}
+              </select>
+              <select id="subPayer" class="field" style="margin:0; flex:1;">
+                ${members.map((m) => `<option value="${m.user_id}" ${m.user_id === uid ? 'selected' : ''}>${esc(name(m.user_id))}が支払う</option>`).join('')}
+              </select>
+            </div>
             <button id="addSubBtn" class="dark full" style="margin-top:8px;">登録する</button>
           </div>
         </div>
@@ -694,7 +722,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 16.0.0<br>（日本語エラー出し分け 搭載版）
+          App Version: 17.0.0<br>（サブスク月末選択＆0時表記対応版）
         </div>
       </section>
 
@@ -1088,7 +1116,7 @@ function wire(state: any) {
     };
   });
 
-  // ★ レシート読み込み＆日本語エラーハンドリング組み込み
+  // レシート読み込み＆日本語エラーハンドリング
   q('#btnReceipt')?.addEventListener('click', () => q('#receiptInput')?.click());
   q('#receiptInput')?.addEventListener('change', async (e: any) => {
     const file = e.target.files[0];
@@ -1154,7 +1182,6 @@ function wire(state: any) {
           renderReceiptItems();
 
         } catch (err: any) {
-          // ★ ここで英語エラーを日本語＆絵文字に変換します！
           let userMessage = "レシートの読み取りに失敗しました。";
           const errorString = JSON.stringify(err.details || err).toLowerCase();
           
@@ -1167,7 +1194,7 @@ function wire(state: any) {
           } else if (err.status === 413 || errorString.includes("payload") || errorString.includes("image")) {
              userMessage = "画像の情報量が多すぎます。少し離して撮影してください📷";
           } else if (err.status === 404 || errorString.includes("not found")) {
-             userMessage = "AIモデルが見つかりません。設定を確認してください⚠️️";
+             userMessage = "AIモデルが見つかりません。設定を確認してください⚠️";
           } else if (err.details && err.details.error && err.details.error.message) {
              userMessage = `エラー: ${err.details.error.message}`;
           } else if (err.message) {
@@ -1227,13 +1254,14 @@ function wire(state: any) {
 
   q('#settleFullBtn')?.addEventListener('click', () => { q('#settleAmount').value = state.amount; });
 
-  q('#addSubBtn')?.addEventListener('click', () => {
+  q('#addSubBtn')?.addEventListener('click', async () => {
     const title = val('#subTitle').trim(); const amount = Number(val('#subAmount')); const date = val('#subDate'); const payer = val('#subPayer');
     if (!title || !amount || !date) { showToast('⚠️ 名前、金額、日付を入力してください', true); return; }
     const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
     subs.push({ id: Date.now().toString(), title, amount, date, payer_id: payer });
     localStorage.setItem(`subs_${pair}`, JSON.stringify(subs)); 
     showToast('🔄 サブスクを登録しました');
+    await processAutoSubs();
     render();
   });
 
@@ -1360,10 +1388,10 @@ function wire(state: any) {
       const originalTitle = e.title.replace('[削除済] ', '').split('::').slice(1).join('::');
       e.title = originalTitle;
       render();
-      showToast('↩️️ 復元しました');
+      showToast('↩️ 復元しました');
 
       supabase.from('expenses').update({ title: originalTitle }).eq('id', id).then(({error}) => {
-         if (error) { e.title = '[削除済] ' + uid + '::' + originalTitle; render(); showToast('⚠️️ 復元に失敗しました', true); }
+         if (error) { e.title = '[削除済] ' + uid + '::' + originalTitle; render(); showToast('⚠️ 復元に失敗しました', true); }
       });
     }
   });
@@ -1443,7 +1471,7 @@ function save() {
     if (error) {
       expenses = expenses.filter(x => x.id !== tempId);
       render();
-      showToast('⚠️️ 通信エラーで追加できませんでした', true);
+      showToast('⚠️ 通信エラーで追加できませんでした', true);
     } else {
       load().then(() => {
         const activeTags = ['INPUT', 'TEXTAREA', 'SELECT'];
