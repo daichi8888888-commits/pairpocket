@@ -1340,7 +1340,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 21.3.0<br>（音声・AI入力データ履歴タップ詳細表示対応版）
+          App Version: 1.21.3<br>（音声・AI入力データ履歴タップ詳細表示対応版）
         </div>
       </section>
 
