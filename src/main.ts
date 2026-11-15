@@ -218,43 +218,95 @@ async function processAutoSubs() {
   }
 }
 
-// リアルタイム同期機能
-async function backgroundSync() {
-  if (!pair || document.visibilityState !== 'visible') return;
-  
-  await processAutoSubs();
+// データの状態変化検知用ハッシュ
+function getDataSignature() {
+  const expSig = expenses
+    .filter(e => !String(e.id).startsWith('temp-'))
+    .map(e => `${e.id}:${e.amount}:${e.title}:${e.payer_id}:${e.category}:${e.expense_date}:${e.updated_at || ''}`)
+    .sort()
+    .join('|');
+  const setSig = settlements
+    .filter(s => !String(s.id).startsWith('temp-'))
+    .map(s => `${s.id}:${s.amount}:${s.settled_at}`)
+    .sort()
+    .join('|');
+  const memSig = members
+    .map(m => `${m.user_id}:${m.profiles?.display_name || ''}`)
+    .sort()
+    .join('|');
+  return `${expSig}##${setSig}##${memSig}`;
+}
 
-  const oldExpLen = expenses.length;
-  const oldSetLen = settlements.length;
-  
-  const [e, s] = await Promise.all([
-    supabase.from('expenses').select('id').eq('pair_id', pair),
-    supabase.from('settlements').select('id').eq('pair_id', pair)
-  ]);
-  
-  const newExpLen = e.data?.length || 0;
-  const newSetLen = s.data?.length || 0;
-  
-  if (oldExpLen !== newExpLen || oldSetLen !== newSetLen) {
+let isManualSyncing = false;
+let realtimeChannel: any = null;
+
+// 手動更新ボタン処理
+async function manualSync() {
+  if (!pair || isManualSyncing) return;
+  isManualSyncing = true;
+  const btns = document.querySelectorAll('.manual-sync-btn');
+  btns.forEach((b: any) => {
+    b.classList.add('syncing');
+    b.disabled = true;
+  });
+
+  try {
     await load();
-    const activeTags = ['INPUT', 'TEXTAREA', 'SELECT'];
-    const isTyping = activeTags.includes(document.activeElement?.tagName || '');
-    if (!isTyping || currentTab !== 'entry') {
-       render(false);
-       showToast('🔄 パートナーの更新を同期しました');
-    }
+    await processAutoSubs();
+    render(false);
+    showToast('✅ 最新データに更新しました！');
+  } catch {
+    showToast('⚠️ 更新に失敗しました。通信環境を確認してください', true);
+  } finally {
+    isManualSyncing = false;
+    document.querySelectorAll('.manual-sync-btn').forEach((b: any) => {
+      b.classList.remove('syncing');
+      b.disabled = false;
+    });
   }
 }
 
-setInterval(backgroundSync, 5000);
-document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'visible' && pair) {
-    await load();
-    await processAutoSubs();
+// Supabase Realtime 購読（即時同期用）
+function setupRealtime() {
+  if (!pair) return;
+  if (realtimeChannel) {
+    try { supabase.removeChannel(realtimeChannel); } catch {}
+  }
+  realtimeChannel = supabase
+    .channel(`pair_sync_${pair}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses', filter: `pair_id=eq.${pair}` }, () => {
+      backgroundSync(true);
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'settlements', filter: `pair_id=eq.${pair}` }, () => {
+      backgroundSync(true);
+    })
+    .subscribe();
+}
+
+// リアルタイム＆バックグラウンド同期機能（追加・編集・削除・名前変更すべて検知）
+async function backgroundSync(forceCheck = false) {
+  if (!pair || (!forceCheck && document.visibilityState !== 'visible') || isManualSyncing) return;
+  
+  await processAutoSubs();
+
+  const oldSig = getDataSignature();
+  await load();
+  const newSig = getDataSignature();
+  
+  if (oldSig !== newSig) {
     const activeTags = ['INPUT', 'TEXTAREA', 'SELECT'];
-    if (!activeTags.includes(document.activeElement?.tagName || '')) {
+    const isTyping = activeTags.includes(document.activeElement?.tagName || '');
+    if (!isTyping) {
       render(false);
     }
+    showToast('🔄 パートナーの更新を同期しました');
+  }
+}
+
+setInterval(() => backgroundSync(false), 5000);
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && pair) {
+    await backgroundSync(true);
   }
 });
 
@@ -286,6 +338,7 @@ async function boot() {
   pair = data.pair_id;
   await load();
   await processAutoSubs();
+  setupRealtime();
   render(false); 
 }
 
@@ -533,11 +586,16 @@ async function render(isInitial = false) {
       .ticket-card { background: #fffafb; border: 1px solid #f0dfe4; border-left: 6px dashed #ff8fa3; border-radius: 14px; padding: 14px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
       .chip-btn { display: inline-block; background: #fff0f3; color: #a76777; padding: 6px 12px; border-radius: 16px; font-size: 12px; font-weight: bold; margin: 0 6px 6px 0; border: 1px solid #f5dce2; cursor: pointer; }
       .chip-btn.selected { background: #ff8fa3; color: #fff; border-color: #ff8fa3; }
+      @keyframes pp-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      .manual-sync-btn.syncing .sync-icon { display: inline-block; animation: pp-spin 0.7s linear infinite; }
     </style>
     <main class="app">
       <div class="top" style="margin-top: 10px; position: relative;">
         <div><div class="brand">♥ PairPocket</div><div class="muted" style="margin-left: 2px;">${esc(pairName)}</div></div>
-        <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 20px; position: absolute; right: 0; top: 0; border-radius: 12px;">☰</button>
+        <div style="position: absolute; right: 0; top: 0; display: flex; gap: 6px; align-items: center;">
+          <button class="ghost manual-sync-btn" title="最新データに更新" style="padding: 8px 12px; font-size: 13px; border-radius: 12px; font-weight: bold; color: #e7617d; display: inline-flex; align-items: center; gap: 4px;"><span class="sync-icon">🔄</span> 更新</button>
+          <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 20px; border-radius: 12px;">☰</button>
+        </div>
       </div>
       
       <!-- ☰ サイドメニュー -->
@@ -984,7 +1042,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 20.0.0<br>（音声マイクボタン＆2人同時回答クイズ対応版）
+          App Version: 21.0.0<br>（ワンタップ更新ボタン＆即時リアルタイム同期対応版）
         </div>
       </section>
 
@@ -1365,6 +1423,9 @@ function showCalc() {
 }
 
 function wire(state: any, myName: string, partnerName: string, partnerUid: string, filteredExpenses: any[], nameFn: (id: string) => string) {
+  document.querySelectorAll('.manual-sync-btn').forEach((b: any) => {
+    b.onclick = () => manualSync();
+  });
   q('#menuBtn')?.addEventListener('click', () => q('#menuDrawer').classList.remove('hide'));
   q('#closeDrawerBtn')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
   q('#menuDrawer')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
