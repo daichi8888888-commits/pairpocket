@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#F67A8E" />
+      <stop offset="55%" stop-color="#E5536F" />
+      <stop offset="100%" stop-color="#C43454" />
+    </linearGradient>
+    <linearGradient id="h1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#F0647D" />
+      <stop offset="100%" stop-color="#D63E5E" />
+    </linearGradient>
+    <linearGradient id="h2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFA288" />
+      <stop offset="100%" stop-color="#F4728A" />
+    </linearGradient>
+    <filter id="shadow" x="-15%" y="-10%" width="130%" height="135%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#500F23" flood-opacity="0.28" />
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)" />
+  <rect x="115" y="95" width="282" height="140" rx="52" fill="#FFF0F4" fill-opacity="0.58" stroke="#FFFFFF" stroke-opacity="0.5" stroke-width="3" />
+  <rect x="92" y="128" width="328" height="286" rx="66" fill="#FFFFFF" filter="url(#shadow)" />
+  <line x1="132" y1="191" x2="380" y2="191" stroke="#E55B73" stroke-opacity="0.22" stroke-width="4" stroke-dasharray="12 10" stroke-linecap="round" />
+  <path d="M289 252 C275 232, 242 236, 242 266 C242 296, 289 324, 289 342 C289 324, 336 296, 336 266 C336 236, 303 232, 289 252 Z" fill="url(#h2)" />
+  <path d="M228 248 C210 222, 168 228, 168 265 C168 302, 228 336, 228 358 C228 336, 288 302, 288 265 C288 228, 246 222, 228 248 Z" fill="url(#h1)" stroke="#FFFFFF" stroke-width="10" stroke-linejoin="round" />
+</svg>
