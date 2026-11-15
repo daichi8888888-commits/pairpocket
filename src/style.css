@@ -44,56 +44,63 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* スマホ画面最適化コンテナ */
+/* スマホ画面最適化コンテナ（iPhone全機種で横はみ出し・意図しない改行を完全防止） */
 .app {
   max-width: 460px;
   margin: 0 auto;
   width: 100%;
   box-sizing: border-box;
-  padding: max(14px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(112px, calc(env(safe-area-inset-bottom) + 92px)) max(16px, env(safe-area-inset-left)) !important;
+  padding: max(12px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(110px, calc(env(safe-area-inset-bottom) + 90px)) max(14px, env(safe-area-inset-left)) !important;
   overflow-x: hidden;
 }
 
-/* ヘッダーバー（公式アプリ風ガラスバー） */
+/* ヘッダーバー（公式アプリ風ガラスバー・iPhoneで絶対に2行崩れしない設計） */
 .top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 14px;
-  padding: 10px 14px;
-  background: rgba(255, 255, 255, 0.78);
+  gap: 8px;
+  flex-wrap: nowrap;
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  background: rgba(255, 255, 255, 0.82);
   backdrop-filter: blur(18px) saturate(180%);
   -webkit-backdrop-filter: blur(18px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.85);
-  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 18px;
   box-shadow: 0 4px 18px -2px rgba(58, 38, 46, 0.05);
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .brand-wrap {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
+  min-width: 0;
+  flex: 1;
 }
 
 .brand-logo-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 11px;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
   background: var(--accent-grad);
   display: flex;
   align-items: center;
   justify-content: center;
   color: #fff;
-  box-shadow: 0 4px 12px rgba(229, 91, 115, 0.3);
+  box-shadow: 0 4px 10px rgba(229, 91, 115, 0.28);
   flex-shrink: 0;
 }
 
 .brand {
-  font-size: 19px;
+  font-size: 17px;
   font-weight: 800;
   color: var(--text-main);
   letter-spacing: -0.03em;
   line-height: 1.15;
+  white-space: nowrap;
 }
 
 .muted {
@@ -107,11 +114,12 @@ body {
   background: var(--surface);
   border: 1px solid rgba(239, 233, 236, 0.9);
   border-radius: var(--radius-xl);
-  padding: 20px;
-  margin: 14px 0;
+  padding: 16px;
+  margin: 12px 0;
   box-shadow: var(--shadow-card);
   width: 100%;
   box-sizing: border-box;
+  overflow: hidden;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
@@ -323,19 +331,20 @@ button:disabled {
 
 .quick {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
   margin: 8px 0 10px;
 }
 
 .quick button {
-  padding: 10px 4px;
+  padding: 10px 2px;
   background: var(--surface-subtle);
   color: var(--text-sub);
   border: 1px solid var(--border-light);
   font-size: 12px;
   font-weight: 700;
   border-radius: 12px;
+  white-space: nowrap;
 }
 
 .split {
@@ -602,10 +611,4 @@ button:disabled {
   background: #F59E6C;
   border-radius: 5px 5px 0 0;
   transition: height 0.3s;
-}
-
-@media (max-width: 370px) {
-  .quick {
-    grid-template-columns: 1fr 1fr;
-  }
 }
