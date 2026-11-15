@@ -30,8 +30,39 @@ let recipeImageBase64 = '';
 let recipeMood = '時短・簡単';
 let lastRecipeHtml = '';
 
-// ミニゲーム用の状態
-let miniGameMode: 'react' | 'bomb' | 'quiz' = 'react';
+// ミニゲーム用の状態（オンライン2台同時接続＆7種ゲーム対応）
+type MiniGameMode = 'sync' | 'timer' | 'balloon' | 'ttt' | 'react' | 'bomb' | 'quiz';
+let miniGameMode: MiniGameMode = 'sync';
+let partnerOnline = false;
+
+// 💞 2. 以心伝心チャレンジ
+let syncTopic = 'ふたりで次に行きたい旅行先は？';
+let syncMyAns = '';
+let syncPartnerAns = '';
+let syncResultHtml = '';
+let syncRevealed = false;
+let syncScore = 0;
+
+// 🎭 3. AI大喜利バトル（または⏱️10秒ピタリ止め）
+// ⏱️ 10.00秒ピタリ止めバトル
+let timerGameState: 'idle' | 'running' | 'done' = 'idle';
+let timerStartAt = 0;
+let timerAnimId: any = null;
+let timerMyTime: number | null = null;
+let timerPartnerTime: number | null = null;
+
+// 🎈 風船チキンレース
+let balloonCount = 0;
+let balloonLimit = 22;
+let balloonTurnUid = '';
+let balloonBoom = false;
+let balloonLoserUid = '';
+
+// ⭕ 消えるマルバツゲーム（最大3個保持）
+let tttMoves: { idx: number; uid: string }[] = [];
+let tttTurnUid = '';
+let tttWinnerUid = '';
+
 let reactScoreP1 = 0, reactScoreP2 = 0;
 let reactGameState: 'idle' | 'waiting' | 'ready' = 'idle';
 let reactTimer: any = null;
@@ -45,7 +76,10 @@ let quizPickP2: number | null = null;
 let quizRevealed = false;
 let isProcessingSubs = false;
 
-// 🔐 管理者モード用の状態
+// 🎙️ 音声で入力欄に自動反映した際の詳細データ保持用
+let pendingVoiceDetail: { type: 'voice', rawText: string, note: string, totalAmount: number, splitText: string } | null = null;
+
+// 🔐 管理者モード用の状態（パスワード013000認証つき）
 let isAdminMode = false;
 let adminFilter: 'all' | 'deleted' = 'all';
 let adminSelectedExpIds: string[] = [];
@@ -239,7 +273,7 @@ function setVoiceBtn(state: 'idle' | 'recording' | 'transcribing', sec = 0) {
       modalBtn.disabled = false;
     }
     if (quickBtn) {
-      quickBtn.textContent = '🎙️ 音声で追加';
+      quickBtn.textContent = '🎙️ 音声で入力';
       quickBtn.style.background = '#ffe5e9';
       quickBtn.style.color = '#e7617d';
       quickBtn.style.boxShadow = 'none';
@@ -352,12 +386,12 @@ async function handleVoiceStop() {
     const partnerUid = partnerMember?.user_id || uid;
 
     if (voiceDirectMode) {
-      // ワンタップ直接登録モード：音声から文字起こし＆JSON抽出して即登録！
-      const prompt = `この音声を正確に日本語で文字起こししつつ、ペアの支出リストを抽出しJSONオブジェクトのみ出力せよ。
+      // ワンタップ入力反映モード：音声から文字起こし＆JSON抽出して、入力画面のフィールドに自動反映！
+      const prompt = `この音声を正確に日本語で文字起こししつつ、ペアの支出情報を抽出しJSONオブジェクトのみ出力せよ。
 ルール:
 - transcriptは音声の正確な文字起こしテキスト（例：「私がカフェで1400円払って割り勘」）。
 - itemsは抽出した支出配列:
-  - title: 品目・内容
+  - title: 品目・内容（例：「カフェ」）
   - totalAmount: 支払った総額(整数、わかる場合。不明ならclaimAmountと同額)
   - claimAmount: 「立て替えた人が相手に請求する金額(整数)」。割り勘・折半や特に指定がない共有支出は支払総額の半分(50%)、相手の分を全額立て替えた場合は100%にする。
   - splitText: 「2人で割り勘 (50%)」「相手分を全額立替 (100%)」などの計算内訳説明
@@ -379,48 +413,52 @@ async function handleVoiceStop() {
         return;
       }
 
-      const date = getToday();
-      let addedCount = 0;
-      const addedTitles: string[] = [];
+      // 複数件話した場合は合算して入力欄に反映
+      let totalClaim = 0;
+      let totalRaw = 0;
+      const titles: string[] = [];
+      const notes: string[] = [];
+      let chosenPayer = uid;
+      let chosenCat = '';
+
       for (const item of parsed) {
-        const payerId = item.payer === 'partner' ? partnerUid : uid;
         const amt = Math.round(Number(item.claimAmount) || 0);
         if (amt <= 0) continue;
-        const title = item.title || '支出';
-        const cat = item.category || 'その他';
-        const memoJson = JSON.stringify({
-          type: 'voice',
-          rawText: voiceTranscript || item.note || `${title} ${amt}円`,
-          note: item.note || '',
-          totalAmount: Number(item.totalAmount) || amt,
-          splitText: item.splitText || ''
-        });
-        expenses.unshift({
-          id: 'temp-' + Date.now() + Math.random(),
-          pair_id: pair,
-          title,
-          amount: amt,
-          payer_id: payerId,
-          category: cat,
-          expense_date: date,
-          memo: memoJson,
-          created_at: new Date().toISOString()
-        });
-        await supabase.rpc('add_shared_expense', {
-          input_pair_id: pair, input_title: title, input_amount: amt, input_payer_id: payerId, input_category: cat, input_expense_date: date, input_memo: memoJson
-        });
-        addedCount++;
-        addedTitles.push(`${title}(${yen(amt)})`);
+        totalClaim += amt;
+        totalRaw += Number(item.totalAmount) || amt;
+        if (item.title) titles.push(item.title);
+        if (item.note) notes.push(item.note);
+        if (!chosenCat && item.category) chosenCat = item.category;
+        if (item.payer === 'partner') chosenPayer = partnerUid;
       }
 
-      if (addedCount === 0) {
+      if (totalClaim <= 0) {
         showToast('⚠️ 有効な金額が聞き取れませんでした', true);
         return;
       }
 
-      showToast(`✅ 音声で追加: ${addedTitles.join('、')}`);
-      await load();
-      render(false);
+      const finalTitle = titles.join('・') || '支出';
+      const finalSplitText = parsed.length === 1 ? (parsed[0].splitText || '') : `${parsed.length}件合算`;
+      const finalNote = notes.join(' / ');
+
+      pendingReceiptItems = [];
+      pendingVoiceDetail = {
+        type: 'voice',
+        rawText: voiceTranscript || finalNote || `${finalTitle} ${totalClaim}円`,
+        note: finalNote,
+        totalAmount: totalRaw || totalClaim,
+        splitText: finalSplitText
+      };
+
+      if (q('#amount')) q('#amount').value = String(totalClaim);
+      if (q('#title')) q('#title').value = finalTitle;
+      if (q('#payer')) q('#payer').value = chosenPayer;
+      document.querySelectorAll('.payer-btn').forEach((x: any) => {
+        x.classList.toggle('selected', x.dataset.payer === chosenPayer);
+      });
+      if (q('#cat') && chosenCat) q('#cat').value = chosenCat;
+      showCalc();
+      showToast(`🎙️ 入力欄に反映しました！「${finalTitle} (${yen(totalClaim)})」`);
     } else {
       // モーダル内モード：文字起こししてプレビュー表示
       const transcript = (await callGeminiAPI([
@@ -551,21 +589,193 @@ async function manualSync() {
   }
 }
 
-// Supabase Realtime 購読（即時同期用）
+// オンライン状態のバッジ表示更新
+function updateOnlineBadges() {
+  const partnerMember = members.find(m => m.user_id !== uid);
+  const pName = partnerMember?.profiles?.display_name || '相手';
+  document.querySelectorAll('.partner-online-badge').forEach((el: any) => {
+    if (partnerOnline) {
+      el.innerHTML = `<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#4caf50; box-shadow:0 0 6px #4caf50; margin-right:4px;"></span>${esc(pName)}: オンライン`;
+      el.style.background = '#e8f5e9';
+      el.style.color = '#2e7d32';
+      el.style.borderColor = '#a5d6a7';
+    } else {
+      el.innerHTML = `<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#b5a6ac; margin-right:4px;"></span>${esc(pName)}: オフライン`;
+      el.style.background = '#f5eef0';
+      el.style.color = '#9b8d93';
+      el.style.borderColor = '#e0d4d8';
+    }
+  });
+}
+
+// ゲームイベントを相手のスマホにリアルタイム送信
+function sendGameEvent(type: string, payload: any = {}) {
+  if (!realtimeChannel) return;
+  try {
+    realtimeChannel.send({
+      type: 'broadcast',
+      event: 'game_event',
+      payload: { sender: uid, type, ...payload }
+    });
+  } catch {}
+}
+
+// 相手からのリアルタイムゲーム通信を受信
+function handleRemoteGameEvent(msg: any) {
+  if (!msg || msg.sender === uid) return;
+  const myName = members.find(m => m.user_id === uid)?.profiles?.display_name || '自分';
+  const partnerName = members.find(m => m.user_id !== uid)?.profiles?.display_name || '相手';
+
+  switch (msg.type) {
+    case 'switch_mode':
+      if (msg.mode) {
+        miniGameMode = msg.mode;
+        renderMiniGameTabs();
+      }
+      break;
+    // 💞 以心伝心ゲーム
+    case 'sync_topic':
+      syncTopic = msg.topic || syncTopic;
+      syncMyAns = '';
+      syncPartnerAns = '';
+      syncResultHtml = '';
+      syncRevealed = false;
+      renderSyncGame(myName, partnerName);
+      showToast('💞 相手がお題を変更しました！');
+      break;
+    case 'sync_ans':
+      syncPartnerAns = msg.ans || '';
+      renderSyncGame(myName, partnerName);
+      if (syncMyAns && syncPartnerAns && !syncRevealed) {
+        evaluateSyncGame(myName, partnerName, false);
+      } else {
+        showToast('🔒 相手が回答を入力しました！');
+      }
+      break;
+    case 'sync_result':
+      syncResultHtml = msg.html || '';
+      syncRevealed = true;
+      syncScore = msg.score ?? syncScore;
+      renderSyncGame(myName, partnerName);
+      break;
+
+    // ⏱️ 10.00秒ピタリ止めバトル
+    case 'timer_start':
+      startTimerChallengeLocal();
+      showToast('⏱️ 相手が10秒チャレンジをスタートしました！');
+      break;
+    case 'timer_stop':
+      timerPartnerTime = Number(msg.time);
+      renderTimerChallenge(myName, partnerName);
+      break;
+
+    // 🎈 風船チキンレース
+    case 'balloon_init':
+      balloonCount = 0;
+      balloonLimit = msg.limit || 22;
+      balloonTurnUid = msg.turnUid || uid;
+      balloonBoom = false;
+      balloonLoserUid = '';
+      renderBalloonGame(myName, partnerName);
+      showToast('🎈 風船チキンレース開始！');
+      break;
+    case 'balloon_push':
+      balloonCount = msg.count;
+      balloonBoom = !!msg.boom;
+      balloonLoserUid = msg.loserUid || '';
+      balloonTurnUid = msg.nextTurnUid || uid;
+      renderBalloonGame(myName, partnerName);
+      break;
+
+    // ⭕ 消えるマルバツゲーム
+    case 'ttt_init':
+      tttMoves = [];
+      tttTurnUid = msg.turnUid || uid;
+      tttWinnerUid = '';
+      renderTttGame(myName, partnerName);
+      showToast('⭕ 消えるマルバツ開始！');
+      break;
+    case 'ttt_move':
+      tttMoves = msg.moves || [];
+      tttTurnUid = msg.nextTurnUid || uid;
+      tttWinnerUid = msg.winnerUid || '';
+      renderTttGame(myName, partnerName);
+      break;
+
+    // 💣 爆弾ゲーム
+    case 'bomb_init':
+      bombTiles = msg.tiles || [];
+      if (q('#bombMsg')) q('#bombMsg').textContent = '交互にタップ！ハズレ(💣)で負け！';
+      renderBombGame();
+      showToast('💣 相手が爆弾ゲームをリセットしました！');
+      break;
+    case 'bomb_open':
+      if (bombTiles[msg.idx]) {
+        bombTiles[msg.idx].opened = true;
+        if (bombTiles[msg.idx].hasBomb) {
+          if (q('#bombMsg')) q('#bombMsg').innerHTML = `💥 <b style="color:#4caf50;">相手(${esc(partnerName)})が爆発！！あなたの勝ち！🎉</b>`;
+          bombTiles.forEach(t => t.opened = true);
+        } else {
+          if (q('#bombMsg')) q('#bombMsg').textContent = `${partnerName}はセーフ！あなたの番です`;
+        }
+        renderBombGame();
+      }
+      break;
+
+    // 🤖 AIクイズ
+    case 'quiz_new':
+      currentQuiz = msg.quiz;
+      quizPickP1 = null;
+      quizPickP2 = null;
+      quizRevealed = false;
+      renderQuizArea(myName, partnerName);
+      showToast('🎲 相手が新しいAIクイズを出題しました！');
+      break;
+    case 'quiz_pick':
+      quizPickP2 = msg.pick;
+      if (quizPickP1 !== null && quizPickP2 !== null && !quizRevealed) {
+        // 2人とも選んだので採点
+        renderQuizArea(myName, partnerName, true);
+      } else {
+        renderQuizArea(myName, partnerName);
+        showToast(`🔒 ${partnerName}が回答を選択しました！`);
+      }
+      break;
+  }
+}
+
+// Supabase Realtime 購読（即時データ同期 ＋ オンラインPresence ＋ ミニゲーム通信対戦）
 function setupRealtime() {
   if (!pair) return;
   if (realtimeChannel) {
     try { supabase.removeChannel(realtimeChannel); } catch {}
   }
   realtimeChannel = supabase
-    .channel(`pair_sync_${pair}`)
+    .channel(`pair_room_${pair}`, {
+      config: { presence: { key: uid } }
+    })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses', filter: `pair_id=eq.${pair}` }, () => {
       backgroundSync(true);
     })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'settlements', filter: `pair_id=eq.${pair}` }, () => {
       backgroundSync(true);
     })
-    .subscribe();
+    .on('presence', { event: 'sync' }, () => {
+      const state = realtimeChannel.presenceState();
+      const onlineUids = Object.keys(state);
+      partnerOnline = onlineUids.some(k => k !== uid);
+      updateOnlineBadges();
+    })
+    .on('broadcast', { event: 'game_event' }, (payload: any) => {
+      handleRemoteGameEvent(payload?.payload);
+    })
+    .subscribe(async (status: string) => {
+      if (status === 'SUBSCRIBED') {
+        try {
+          await realtimeChannel.track({ user_id: uid, online_at: new Date().toISOString() });
+        } catch {}
+      }
+    });
 }
 
 let pendingSyncRender = false;
@@ -895,7 +1105,13 @@ async function render(isInitial = false) {
     </style>
     <main class="app">
       <div class="top" style="margin-top: 10px; position: relative;">
-        <div><div class="brand">♥ PairPocket</div><div class="muted" style="margin-left: 2px;">${esc(pairName)}</div></div>
+        <div>
+          <div class="brand">♥ PairPocket</div>
+          <div style="display:flex; align-items:center; gap:8px; margin-left:2px; margin-top:2px;">
+            <span class="muted">${esc(pairName)}</span>
+            <span class="partner-online-badge" style="font-size:10px; font-weight:bold; padding:2px 8px; border-radius:10px; border:1px solid #e0d4d8; background:#f5eef0; color:#9b8d93; display:inline-flex; align-items:center;"></span>
+          </div>
+        </div>
         <div style="position: absolute; right: 0; top: 0; display: flex; gap: 6px; align-items: center;">
           <button class="ghost manual-sync-btn" title="最新データに更新" style="padding: 8px 12px; font-size: 13px; border-radius: 12px; font-weight: bold; color: #e7617d; display: inline-flex; align-items: center; gap: 4px;"><span class="sync-icon">🔄</span> 更新</button>
           <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 20px; border-radius: 12px;">☰</button>
@@ -930,7 +1146,7 @@ async function render(isInitial = false) {
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 6px; flex-wrap: wrap;">
             <label class="muted" style="white-space: nowrap;">相手への請求額</label>
             <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-              <button id="btnQuickVoice" type="button" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #ffe5e9; color: #e7617d; border-radius: 12px; font-weight: bold; transition: 0.2s;">🎙️ 音声で追加</button>
+              <button id="btnQuickVoice" type="button" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #ffe5e9; color: #e7617d; border-radius: 12px; font-weight: bold; transition: 0.2s;">🎙️ 音声で入力</button>
               <button id="btnSmartInput" type="button" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #f0f4ff; color: #4361ee; border-radius: 12px; font-weight: bold;">🪄 文章入力</button>
               <button id="btnReceipt" type="button" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #fff0f3; color: #a13c52; border-radius: 12px; font-weight: bold;">📷 レシート</button>
             </div>
@@ -1108,16 +1324,42 @@ async function render(isInitial = false) {
         ` : ''}
       </section>
 
-      <!-- サブ機能②：🎮 待ち時間ミニゲーム -->
+      <!-- サブ機能②：🎮 待ち時間ミニゲーム（2台オンライン同時接続＆1台対戦両対応） -->
       <section id="sec-minigame" style="display: none;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
-          <h2 style="margin: 0; font-size: 18px;">🎮 ふたりで待ち時間対戦</h2>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; margin-top: 10px;">
+          <h2 style="margin: 0; font-size: 18px;">🎮 ふたりでオンライン対戦</h2>
+          <span class="partner-online-badge" style="font-size:11px; font-weight:bold; padding:4px 10px; border-radius:12px; border:1px solid #e0d4d8; background:#f5eef0; color:#9b8d93; display:inline-flex; align-items:center;"></span>
         </div>
+        <p class="muted" style="margin-top:0; margin-bottom:10px; font-size:11px;">2人それぞれのスマホで開くとリアルタイム通信対戦！1台のスマホを交互に触っても遊べます。</p>
         
-        <div style="display: flex; gap: 6px; margin-bottom: 15px;">
-          <button id="btnGameReact" class="sched-mode-btn ${miniGameMode === 'react' ? 'active' : 'inactive'}">⚡ 反射神経</button>
-          <button id="btnGameBomb" class="sched-mode-btn ${miniGameMode === 'bomb' ? 'active' : 'inactive'}">💣 爆弾</button>
+        <div style="display: flex; gap: 6px; margin-bottom: 14px; overflow-x: auto; padding-bottom: 4px;">
+          <button id="btnGameSync" class="sched-mode-btn ${miniGameMode === 'sync' ? 'active' : 'inactive'}">💞 以心伝心</button>
+          <button id="btnGameTimer" class="sched-mode-btn ${miniGameMode === 'timer' ? 'active' : 'inactive'}">⏱️ 10秒止め</button>
+          <button id="btnGameBalloon" class="sched-mode-btn ${miniGameMode === 'balloon' ? 'active' : 'inactive'}">🎈 風船</button>
+          <button id="btnGameTtt" class="sched-mode-btn ${miniGameMode === 'ttt' ? 'active' : 'inactive'}">⭕ 消える〇×</button>
           <button id="btnGameQuiz" class="sched-mode-btn ${miniGameMode === 'quiz' ? 'active' : 'inactive'}">🤖 AIクイズ</button>
+          <button id="btnGameBomb" class="sched-mode-btn ${miniGameMode === 'bomb' ? 'active' : 'inactive'}">💣 爆弾</button>
+          <button id="btnGameReact" class="sched-mode-btn ${miniGameMode === 'react' ? 'active' : 'inactive'}">⚡ 反射神経</button>
+        </div>
+
+        <!-- ゲーム①（新）：💞 以心伝心チャレンジ（AIシンクロ採点） -->
+        <div id="wrapGameSync" class="card" style="padding: 16px; display: ${miniGameMode === 'sync' ? 'block' : 'none'};">
+          <div id="syncGameArea"></div>
+        </div>
+
+        <!-- ゲーム②（新）：⏱️ 体内時計10.00秒ピタリ止めバトル -->
+        <div id="wrapGameTimer" class="card" style="padding: 16px; text-align: center; display: ${miniGameMode === 'timer' ? 'block' : 'none'};">
+          <div id="timerGameArea"></div>
+        </div>
+
+        <!-- ゲーム③（新）：🎈 風船チキンレース -->
+        <div id="wrapGameBalloon" class="card" style="padding: 16px; text-align: center; display: ${miniGameMode === 'balloon' ? 'block' : 'none'};">
+          <div id="balloonGameArea"></div>
+        </div>
+
+        <!-- ゲーム④（新）：⭕ 消えるマルバツゲーム -->
+        <div id="wrapGameTtt" class="card" style="padding: 16px; text-align: center; display: ${miniGameMode === 'ttt' ? 'block' : 'none'};">
+          <div id="tttGameArea"></div>
         </div>
 
         <div id="wrapGameReact" class="card" style="padding: 12px; text-align: center; display: ${miniGameMode === 'react' ? 'block' : 'none'};">
@@ -1167,7 +1409,7 @@ async function render(isInitial = false) {
               <option value="マニアック">マニアック</option>
             </select>
           </div>
-          <button id="btnGenerateQuiz" class="primary full" style="padding:12px; font-size:15px;">🎲 AIでクイズを出題！</button>
+          <button id="btnGenerateQuiz" class="primary full" style="padding:12px; font-size:15px;">🎲 AIでクイズを出題！(相手の画面にも同期)</button>
 
           <div id="quizPlayArea" style="margin-top: 16px;"></div>
         </div>
@@ -1462,7 +1704,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 1.22.0<br>（管理者モード＆完全削除機能 搭載版）
+          App Version: 1.23.0<br>（オンライン同時接続＆4大新ゲーム＆音声自動入力反映版）
         </div>
       </section>
 
@@ -1573,7 +1815,8 @@ async function render(isInitial = false) {
   wire(stateObj, myName, partnerName, partnerMember?.user_id || uid, filteredExpenses, name);
   setTab(currentTab); 
   showCalc();
-  if (currentQuiz) renderQuizArea(myName, partnerName);
+  updateOnlineBadges();
+  renderMiniGameTabs();
 
   if (isInitial && currentTab === 'entry') {
     setTimeout(() => q('#amount')?.focus(), 100);
@@ -1631,9 +1874,519 @@ function renderSchedUI() {
   if(schedMode === 'multi') renderSchedCal();
 }
 
-function initBombGame() {
+// ★ ミニゲームタブ切り替え＆描画統括
+function renderMiniGameTabs() {
+  const myName = members.find(m => m.user_id === uid)?.profiles?.display_name || '自分';
+  const partnerName = members.find(m => m.user_id !== uid)?.profiles?.display_name || '相手';
+
+  const modes: { key: typeof miniGameMode; wrap: string; btn: string }[] = [
+    { key: 'sync', wrap: '#wrapGameSync', btn: '#btnGameSync' },
+    { key: 'timer', wrap: '#wrapGameTimer', btn: '#btnGameTimer' },
+    { key: 'balloon', wrap: '#wrapGameBalloon', btn: '#btnGameBalloon' },
+    { key: 'ttt', wrap: '#wrapGameTtt', btn: '#btnGameTtt' },
+    { key: 'quiz', wrap: '#wrapGameQuiz', btn: '#btnGameQuiz' },
+    { key: 'bomb', wrap: '#wrapGameBomb', btn: '#btnGameBomb' },
+    { key: 'react', wrap: '#wrapGameReact', btn: '#btnGameReact' },
+  ];
+
+  modes.forEach(m => {
+    if (q(m.wrap)) q(m.wrap).style.display = miniGameMode === m.key ? 'block' : 'none';
+    if (q(m.btn)) q(m.btn).className = `sched-mode-btn ${miniGameMode === m.key ? 'active' : 'inactive'}`;
+  });
+
+  if (miniGameMode === 'sync') renderSyncGame(myName, partnerName);
+  else if (miniGameMode === 'timer') renderTimerChallenge(myName, partnerName);
+  else if (miniGameMode === 'balloon') renderBalloonGame(myName, partnerName);
+  else if (miniGameMode === 'ttt') renderTttGame(myName, partnerName);
+  else if (miniGameMode === 'bomb') {
+    if (bombTiles.length === 0) initBombGame(false);
+    else renderBombGame();
+  } else if (miniGameMode === 'quiz' && currentQuiz) {
+    renderQuizArea(myName, partnerName);
+  }
+}
+
+// ==========================================
+// ゲーム①（新）：💞 以心伝心チャレンジ（AIシンクロ採点）
+// ==========================================
+function renderSyncGame(myName: string, partnerName: string) {
+  const area = q('#syncGameArea');
+  if (!area) return;
+
+  const presets = [
+    '今一番食べたいものは？',
+    '次の休みに行きたい場所は？',
+    'ふたりの思い出の場所といえば？',
+    '100万円当たったら何に使う？',
+    '相手のチャームポイントは？',
+    '最後の晩餐に何を食べる？'
+  ];
+
+  area.innerHTML = `
+    <div style="margin-bottom:12px;">
+      <div style="font-weight:800; font-size:15px; color:#e7617d; margin-bottom:4px;">💞 ふたりの以心伝心チャレンジ</div>
+      <div class="muted" style="font-size:11px;">同じお題にせーので回答！AIがふたりのシンクロ率（0〜100%）を採点します。</div>
+    </div>
+
+    <div style="margin-bottom:10px;">
+      ${presets.map(t => `<span class="chip-btn sync-topic-chip" data-topic="${esc(t)}">${esc(t)}</span>`).join('')}
+    </div>
+
+    <div style="display:flex; gap:6px; margin-bottom:14px;">
+      <input id="syncTopicInput" class="field" style="margin:0; flex:1;" value="${esc(syncTopic)}" placeholder="お題を入力">
+      <button id="btnSetSyncTopic" class="dark" style="padding:0 12px; font-size:12px; white-space:nowrap;">お題変更</button>
+    </div>
+
+    <div style="background:#fffafb; border:2px solid #ffccd5; border-radius:14px; padding:12px; margin-bottom:14px; text-align:center;">
+      <div class="muted" style="font-size:11px; font-weight:bold;">現在のお題</div>
+      <div style="font-size:16px; font-weight:900; color:#3e3438; margin-top:4px;">「${esc(syncTopic)}」</div>
+    </div>
+
+    <!-- 自分の回答 -->
+    <div style="background:#fff; border:1px solid #f0dfe4; border-radius:12px; padding:12px; margin-bottom:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <b style="font-size:13px; color:#e7617d;">👤 ${esc(myName)}（あなた）の回答</b>
+        <span style="font-size:11px; font-weight:bold; color:${syncMyAns ? '#4caf50' : '#9b8d93'};">${syncMyAns ? '🔒 入力ロック済み' : '未入力'}</span>
+      </div>
+      <div style="display:flex; gap:6px;">
+        <input id="syncMyAnsInput" class="field" style="margin:0; flex:1;" type="${syncMyAns && !syncRevealed ? 'password' : 'text'}" value="${esc(syncMyAns)}" placeholder="秘密で答えを入力...">
+        <button id="btnLockSyncAns" class="primary" style="padding:0 14px; font-size:12px; white-space:nowrap;">🔒 決定</button>
+      </div>
+    </div>
+
+    <!-- 相手の回答ステータス（＋1台プレイ用入力） -->
+    <div style="background:#fff; border:1px solid #f0dfe4; border-radius:12px; padding:12px; margin-bottom:12px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <b style="font-size:13px; color:#5995bd;">👤 ${esc(partnerName)}の回答</b>
+        <span style="font-size:12px; font-weight:bold; color:${syncPartnerAns ? '#4caf50' : '#9b8d93'};">
+          ${syncPartnerAns ? (syncRevealed ? `「${esc(syncPartnerAns)}」` : '🔒 通信で受信済み！') : '⏳ 相手のスマホからの入力待ち...'}
+        </span>
+      </div>
+      <details style="margin-top:8px;">
+        <summary style="font-size:11px; color:#9b8d93; cursor:pointer;">📱 1台のスマホで2人遊ぶ場合はこちらをタップ</summary>
+        <div style="display:flex; gap:6px; margin-top:6px;">
+          <input id="syncPartnerLocalInput" class="field" style="margin:0; flex:1;" type="${syncPartnerAns && !syncRevealed ? 'password' : 'text'}" value="${esc(syncPartnerAns)}" placeholder="${esc(partnerName)}の答えを入力...">
+          <button id="btnLockPartnerLocalAns" class="dark" style="padding:0 12px; font-size:11px; white-space:nowrap;">セット</button>
+        </div>
+      </details>
+    </div>
+
+    ${syncMyAns && syncPartnerAns && !syncRevealed ? `
+      <button id="btnRunSyncJudge" class="primary full" style="padding:14px; font-size:15px;">🤖 AIでシンクロ率を採点する！</button>
+    ` : ''}
+
+    ${syncResultHtml ? `
+      <div style="margin-top:12px; background:#fff0f3; border:2px solid #ff8fa3; border-radius:14px; padding:14px; text-align:center;">
+        ${syncResultHtml}
+      </div>
+    ` : ''}
+  `;
+
+  area.querySelectorAll('.sync-topic-chip').forEach((chip: any) => {
+    chip.onclick = () => {
+      syncTopic = chip.dataset.topic;
+      syncMyAns = '';
+      syncPartnerAns = '';
+      syncResultHtml = '';
+      syncRevealed = false;
+      sendGameEvent('sync_topic', { topic: syncTopic });
+      renderSyncGame(myName, partnerName);
+    };
+  });
+
+  q('#btnSetSyncTopic')?.addEventListener('click', () => {
+    const t = val('#syncTopicInput').trim();
+    if (!t) return;
+    syncTopic = t;
+    syncMyAns = '';
+    syncPartnerAns = '';
+    syncResultHtml = '';
+    syncRevealed = false;
+    sendGameEvent('sync_topic', { topic: syncTopic });
+    renderSyncGame(myName, partnerName);
+    showToast('💞 お題を相手のスマホにも同期しました');
+  });
+
+  q('#btnLockSyncAns')?.addEventListener('click', () => {
+    const a = val('#syncMyAnsInput').trim();
+    if (!a) return showToast('⚠️ 回答を入力してください', true);
+    syncMyAns = a;
+    sendGameEvent('sync_ans', { ans: syncMyAns });
+    renderSyncGame(myName, partnerName);
+    if (syncMyAns && syncPartnerAns && !syncRevealed) {
+      evaluateSyncGame(myName, partnerName, true);
+    } else {
+      showToast('🔒 回答をロックして相手に通知しました！');
+    }
+  });
+
+  q('#btnLockPartnerLocalAns')?.addEventListener('click', () => {
+    const a = val('#syncPartnerLocalInput').trim();
+    if (!a) return;
+    syncPartnerAns = a;
+    renderSyncGame(myName, partnerName);
+    if (syncMyAns && syncPartnerAns && !syncRevealed) {
+      evaluateSyncGame(myName, partnerName, true);
+    }
+  });
+
+  q('#btnRunSyncJudge')?.addEventListener('click', () => {
+    evaluateSyncGame(myName, partnerName, true);
+  });
+}
+
+async function evaluateSyncGame(myName: string, partnerName: string, broadcast: boolean) {
+  syncRevealed = true;
+  syncResultHtml = `<div style="padding:12px; color:#a76777; font-weight:bold;">🤖💞 AIがふたりのシンクロ率を判定中...</div>`;
+  renderSyncGame(myName, partnerName);
+
+  try {
+    const prompt = `カップルの以心伝心ゲームの審判として、以下の2人の回答のシンクロ率(0〜100の整数)と面白い講評をJSONのみ出力せよ。
+お題: 「${syncTopic}」
+${myName}の回答: 「${syncMyAns}」
+${partnerName}の回答: 「${syncPartnerAns}」
+出力形式: {"score":85,"title":"ほぼ以心伝心！","comment":"2人とも麺類気分でバッチリ！"}`;
+
+    const resText = await callGeminiAPI([{ text: prompt }], true);
+    const data = JSON.parse(resText);
+    syncScore = Number(data.score) || 0;
+    syncResultHtml = `
+      <div style="font-size:12px; color:#a76777; font-weight:bold;">ふたりのシンクロ率</div>
+      <div style="font-size:38px; font-weight:900; color:#e7617d; margin:4px 0;">${syncScore}%</div>
+      <div style="font-size:15px; font-weight:800; color:#3e3438; margin-bottom:10px;">✨ ${esc(data.title || '')}</div>
+      <div style="display:flex; gap:8px; margin-bottom:10px; text-align:left;">
+        <div style="flex:1; background:#fff; padding:8px 10px; border-radius:10px; border:1px solid #f0dfe4;">
+          <div style="font-size:10px; color:#e7617d; font-weight:bold;">${esc(myName)}</div>
+          <div style="font-size:13px; font-weight:bold; color:#3e3438;">${esc(syncMyAns)}</div>
+        </div>
+        <div style="flex:1; background:#fff; padding:8px 10px; border-radius:10px; border:1px solid #f0dfe4;">
+          <div style="font-size:10px; color:#5995bd; font-weight:bold;">${esc(partnerName)}</div>
+          <div style="font-size:13px; font-weight:bold; color:#3e3438;">${esc(syncPartnerAns)}</div>
+        </div>
+      </div>
+      <div style="font-size:13px; color:#59464e; line-height:1.5;">${esc(data.comment || '')}</div>
+    `;
+  } catch {
+    const exact = syncMyAns.trim() === syncPartnerAns.trim();
+    syncScore = exact ? 100 : 50;
+    syncResultHtml = `
+      <div style="font-size:28px; font-weight:900; color:#e7617d;">${syncScore}%</div>
+      <div style="font-size:13px; margin-top:6px;">${esc(myName)}: 「${esc(syncMyAns)}」 / ${esc(partnerName)}: 「${esc(syncPartnerAns)}」</div>
+    `;
+  }
+
+  renderSyncGame(myName, partnerName);
+  if (broadcast) {
+    sendGameEvent('sync_result', { html: syncResultHtml, score: syncScore });
+  }
+}
+
+// ==========================================
+// ゲーム②（新）：⏱️ 体内時計 10.00秒ピタリ止めバトル
+// ==========================================
+function startTimerChallengeLocal() {
+  if (timerAnimId) cancelAnimationFrame(timerAnimId);
+  timerState = 'running';
+  timerStartAt = performance.now();
+  timerMyTime = null;
+  timerPartnerTime = null;
+
+  const myName = members.find(m => m.user_id === uid)?.profiles?.display_name || '自分';
+  const partnerName = members.find(m => m.user_id !== uid)?.profiles?.display_name || '相手';
+  renderTimerChallenge(myName, partnerName);
+
+  const tick = () => {
+    if (timerState !== 'running') return;
+    const elapsed = (performance.now() - timerStartAt) / 1000;
+    const disp = q('#timerClockDisplay');
+    if (disp) {
+      if (elapsed < 3.0) {
+        disp.textContent = `${elapsed.toFixed(2)} 秒`;
+        disp.style.color = '#3e3438';
+      } else {
+        disp.textContent = '??.?? 秒';
+        disp.style.color = '#e7617d';
+      }
+    }
+    if (elapsed < 25 && (timerMyTime === null || timerPartnerTime === null)) {
+      timerAnimId = requestAnimationFrame(tick);
+    } else if (timerMyTime !== null && timerPartnerTime !== null) {
+      timerState = 'done';
+      renderTimerChallenge(myName, partnerName);
+    }
+  };
+  timerAnimId = requestAnimationFrame(tick);
+}
+
+function renderTimerChallenge(myName: string, partnerName: string) {
+  const area = q('#timerGameArea');
+  if (!area) return;
+
+  const bothDone = timerMyTime !== null && timerPartnerTime !== null;
+  if (bothDone) timerState = 'done';
+
+  let resultHtml = '';
+  if (timerMyTime !== null || timerPartnerTime !== null) {
+    const myDiff = timerMyTime !== null ? Math.abs(timerMyTime - 10.0) : 999;
+    const pDiff = timerPartnerTime !== null ? Math.abs(timerPartnerTime - 10.0) : 999;
+    let winnerBanner = '';
+    if (bothDone) {
+      if (Math.abs(myDiff - pDiff) < 0.005) winnerBanner = '🎉 奇跡の同タイム引き分け！！';
+      else if (myDiff < pDiff) winnerBanner = `🏆 ${esc(myName)}の勝ち！！（誤差 ${myDiff.toFixed(2)}秒）`;
+      else winnerBanner = `🏆 ${esc(partnerName)}の勝ち！！（誤差 ${pDiff.toFixed(2)}秒）`;
+    }
+
+    resultHtml = `
+      <div style="display:flex; gap:8px; margin-top:14px;">
+        <div style="flex:1; background:#fff0f3; border:1px solid #ffccd5; border-radius:12px; padding:10px;">
+          <div style="font-size:11px; color:#e7617d; font-weight:bold;">${esc(myName)}</div>
+          <div style="font-size:18px; font-weight:900; color:#3e3438; margin-top:2px;">
+            ${timerMyTime !== null ? (bothDone ? `${timerMyTime.toFixed(2)}秒` : '🔒 ストップ済！') : '計測中...'}
+          </div>
+          ${bothDone && timerMyTime !== null ? `<div class="muted" style="font-size:11px;">誤差 ${myDiff.toFixed(2)}秒</div>` : ''}
+        </div>
+        <div style="flex:1; background:#f0f4f8; border:1px solid #d0e1f0; border-radius:12px; padding:10px;">
+          <div style="font-size:11px; color:#5995bd; font-weight:bold;">${esc(partnerName)}</div>
+          <div style="font-size:18px; font-weight:900; color:#3e3438; margin-top:2px;">
+            ${timerPartnerTime !== null ? (bothDone ? `${timerPartnerTime.toFixed(2)}秒` : '🔒 ストップ済！') : '計測中...'}
+          </div>
+          ${bothDone && timerPartnerTime !== null ? `<div class="muted" style="font-size:11px;">誤差 ${pDiff.toFixed(2)}秒</div>` : ''}
+        </div>
+      </div>
+      ${winnerBanner ? `<div style="margin-top:12px; padding:12px; background:#fffafb; border:2px solid #e7617d; border-radius:12px; font-weight:900; font-size:16px; color:#e7617d;">${winnerBanner}</div>` : ''}
+    `;
+  }
+
+  area.innerHTML = `
+    <div style="font-weight:800; font-size:15px; color:#e7617d; margin-bottom:4px;">⏱️ 体内時計 10.00秒ピタリ止めバトル</div>
+    <div class="muted" style="font-size:11px; margin-bottom:14px;">3秒経過で数字が「??.??」に隠れます。体内時計で10.00秒に近い方が勝ち！</div>
+
+    <div style="background:#fffafb; border:2px solid #f0dfe4; border-radius:16px; padding:24px 12px; margin-bottom:14px;">
+      <div id="timerClockDisplay" style="font-size:38px; font-weight:900; color:#3e3438; font-variant-numeric:tabular-nums;">
+        ${timerState === 'idle' ? '0.00 秒' : (bothDone ? '10.00秒 判定完了！' : '??.?? 秒')}
+      </div>
+    </div>
+
+    ${timerState === 'running' ? `
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <button id="btnStopMyTimer" class="primary full" style="padding:18px; font-size:18px;" ${timerMyTime !== null ? 'disabled' : ''}>
+          ${timerMyTime !== null ? '🔒 あなたのタイム確定済み' : `🛑 ストップ！（${esc(myName)}）`}
+        </button>
+        <button id="btnStopPartnerLocalTimer" class="ghost full" style="padding:10px; font-size:12px; color:#5995bd;" ${timerPartnerTime !== null ? 'disabled' : ''}>
+          ${timerPartnerTime !== null ? `🔒 ${esc(partnerName)}も確定済み` : `📱 1台で遊ぶ用：${esc(partnerName)}のストップ`}
+        </button>
+      </div>
+    ` : `
+      <button id="btnStartTimerGame" class="primary full" style="padding:14px; font-size:16px;">🚀 スタート！（両方のスマホで同時開始）</button>
+    `}
+
+    ${resultHtml}
+  `;
+
+  q('#btnStartTimerGame')?.addEventListener('click', () => {
+    startTimerChallengeLocal();
+    sendGameEvent('timer_start', {});
+  });
+
+  q('#btnStopMyTimer')?.addEventListener('click', () => {
+    if (timerState !== 'running' || timerMyTime !== null) return;
+    timerMyTime = Number(((performance.now() - timerStartAt) / 1000).toFixed(2));
+    sendGameEvent('timer_stop', { time: timerMyTime });
+    renderTimerChallenge(myName, partnerName);
+  });
+
+  q('#btnStopPartnerLocalTimer')?.addEventListener('click', () => {
+    if (timerState !== 'running' || timerPartnerTime !== null) return;
+    timerPartnerTime = Number(((performance.now() - timerStartAt) / 1000).toFixed(2));
+    renderTimerChallenge(myName, partnerName);
+  });
+}
+
+// ==========================================
+// ゲーム③（新）：🎈 風船チキンレース
+// ==========================================
+function renderBalloonGame(myName: string, partnerName: string) {
+  const area = q('#balloonGameArea');
+  if (!area) return;
+
+  const partnerUid = members.find(m => m.user_id !== uid)?.user_id || 'partner';
+  if (!balloonTurnUid) balloonTurnUid = uid;
+  const isMyTurn = balloonTurnUid === uid;
+  const currentTurnName = isMyTurn ? myName : partnerName;
+  const loserName = balloonLoserUid === uid ? myName : partnerName;
+
+  const scale = Math.min(2.6, 1 + balloonCount * 0.055);
+  const dangerRatio = Math.min(1, balloonCount / 28);
+  const bgHue = Math.round(350 - dangerRatio * 10);
+
+  area.innerHTML = `
+    <div style="font-weight:800; font-size:15px; color:#e7617d; margin-bottom:4px;">🎈 風船チキンレース</div>
+    <div class="muted" style="font-size:11px; margin-bottom:12px;">交互に1〜3回空気を入れよう！限界を超えて割ってしまった人の負け💥</div>
+
+    <div style="background:#fffafb; border:2px solid #f0dfe4; border-radius:16px; height:190px; display:flex; flex-direction:column; align-items:center; justify-content:center; margin-bottom:12px; overflow:hidden; position:relative;">
+      <div style="font-size:52px; transform:scale(${balloonBoom ? 2.2 : scale}); transition:transform 0.25s cubic-bezier(0.34,1.56,0.64,1); filter:drop-shadow(0 6px 12px rgba(231,97,125,${0.2 + dangerRatio * 0.5}));">
+        ${balloonBoom ? '💥' : '🎈'}
+      </div>
+      <div style="margin-top:26px; font-weight:900; font-size:14px; color:hsl(${bgHue}, 70%, 45%);">
+        現在: ${balloonCount} プッシュ
+      </div>
+    </div>
+
+    ${balloonBoom ? `
+      <div style="padding:12px; background:#ffe5e9; border:2px solid #bf4f68; border-radius:12px; color:#a13c52; font-weight:900; font-size:15px; margin-bottom:12px;">
+        💥 ドカン！！ ${esc(loserName)}が割ってしまった！負け！
+      </div>
+    ` : `
+      <div style="margin-bottom:10px; font-weight:bold; font-size:14px; color:${isMyTurn ? '#e7617d' : '#5995bd'};">
+        👉 現在の番：<b>${esc(currentTurnName)}</b> ${isMyTurn ? '（あなたの番！）' : '（相手の操作待ち / 1台ならそのまま押せます）'}
+      </div>
+      <div style="display:flex; gap:8px; margin-bottom:12px;">
+        <button class="balloon-push-btn primary" data-push="1" style="flex:1; padding:14px 0; font-size:15px;">💨 +1回</button>
+        <button class="balloon-push-btn primary" data-push="2" style="flex:1; padding:14px 0; font-size:15px; background:#ff758f;">💨 +2回</button>
+        <button class="balloon-push-btn primary" data-push="3" style="flex:1; padding:14px 0; font-size:15px; background:#e7617d;">🔥 +3回</button>
+      </div>
+    `}
+
+    <button id="btnResetBalloon" class="dark full" style="padding:12px;">🔄 新しい風船でスタート（相手にも同期）</button>
+  `;
+
+  area.querySelectorAll('.balloon-push-btn').forEach((btn: any) => {
+    btn.onclick = () => {
+      if (balloonBoom) return;
+      const push = Number(btn.dataset.push) || 1;
+      const actorUid = balloonTurnUid || uid;
+      balloonCount += push;
+      if (balloonCount >= balloonLimit) {
+        balloonBoom = true;
+        balloonLoserUid = actorUid;
+      } else {
+        balloonTurnUid = actorUid === uid ? partnerUid : uid;
+      }
+      sendGameEvent('balloon_push', {
+        count: balloonCount,
+        boom: balloonBoom,
+        loserUid: balloonLoserUid,
+        nextTurnUid: balloonTurnUid
+      });
+      renderBalloonGame(myName, partnerName);
+    };
+  });
+
+  q('#btnResetBalloon')?.addEventListener('click', () => {
+    balloonCount = 0;
+    balloonLimit = 15 + Math.floor(Math.random() * 20);
+    balloonBoom = false;
+    balloonLoserUid = '';
+    balloonTurnUid = uid;
+    sendGameEvent('balloon_init', { limit: balloonLimit, turnUid: balloonTurnUid });
+    renderBalloonGame(myName, partnerName);
+  });
+}
+
+// ==========================================
+// ゲーム④（新）：⭕ 消えるマルバツゲーム（最大3個ルール）
+// ==========================================
+function renderTttGame(myName: string, partnerName: string) {
+  const area = q('#tttGameArea');
+  if (!area) return;
+
+  const partnerUid = members.find(m => m.user_id !== uid)?.user_id || 'partner';
+  if (!tttTurnUid) tttTurnUid = uid;
+  const isMyTurn = tttTurnUid === uid;
+  const turnName = isMyTurn ? `${myName} (⭕)` : `${partnerName} (❌)`;
+
+  // 各プレイヤーの最古のコマ（3個置いている場合、次に消えるコマ）を特定
+  const myMarks = tttMoves.filter(m => m.uid === uid);
+  const partnerMarks = tttMoves.filter(m => m.uid !== uid);
+  const myVanishIdx = myMarks.length >= 3 ? myMarks[0].idx : -1;
+  const partnerVanishIdx = partnerMarks.length >= 3 ? partnerMarks[0].idx : -1;
+
+  const cellsHtml = Array.from({ length: 9 }, (_, idx) => {
+    const move = tttMoves.find(m => m.idx === idx);
+    const isMine = move?.uid === uid;
+    const mark = !move ? '' : (isMine ? '⭕' : '❌');
+    const willVanish = idx === myVanishIdx || idx === partnerVanishIdx;
+    return `
+      <button class="ttt-cell" data-idx="${idx}" style="height:76px; border-radius:14px; border:2px ${willVanish ? 'dashed #ff8fa3' : 'solid #f0dfe4'}; background:${move ? (willVanish ? '#fff5f7' : '#fff') : '#fffafb'}; font-size:28px; cursor:pointer; display:flex; flex-direction:column; align-items:center; justify-content:center; opacity:${willVanish ? '0.55' : '1'}; position:relative;">
+        <span>${mark}</span>
+        ${willVanish ? '<span style="font-size:9px; color:#bf4f68; font-weight:bold; position:absolute; bottom:4px;">次消える</span>' : ''}
+      </button>
+    `;
+  }).join('');
+
+  const winnerName = tttWinnerUid === uid ? myName : partnerName;
+
+  area.innerHTML = `
+    <div style="font-weight:800; font-size:15px; color:#e7617d; margin-bottom:4px;">⭕ 消えるマルバツゲーム</div>
+    <div class="muted" style="font-size:11px; margin-bottom:10px;">盤面に置けるのは1人3個まで！4個目を置くと一番古い自分の印が消えるから引き分けなし！</div>
+
+    ${tttWinnerUid ? `
+      <div style="padding:10px; background:#e8f5e9; border:2px solid #4caf50; border-radius:12px; color:#2e7d32; font-weight:900; font-size:15px; margin-bottom:12px;">
+        🏆 ${esc(winnerName)}の勝利！！
+      </div>
+    ` : `
+      <div style="margin-bottom:10px; font-weight:bold; font-size:14px; color:${isMyTurn ? '#e7617d' : '#5995bd'};">
+        👉 手番：<b>${esc(turnName)}</b>
+      </div>
+    `}
+
+    <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-bottom:14px;">
+      ${cellsHtml}
+    </div>
+
+    <button id="btnResetTtt" class="dark full" style="padding:12px;">🔄 盤面をリセット（相手にも同期）</button>
+  `;
+
+  const winLines = [
+    [0, 1, 2], [3, 4, 5], [6, 7, 8],
+    [0, 3, 6], [1, 4, 7], [2, 5, 8],
+    [0, 4, 8], [2, 4, 6]
+  ];
+
+  area.querySelectorAll('.ttt-cell').forEach((cell: any) => {
+    cell.onclick = () => {
+      if (tttWinnerUid) return;
+      const idx = Number(cell.dataset.idx);
+      if (tttMoves.some(m => m.idx === idx)) return;
+
+      const moverUid = tttTurnUid || uid;
+      const moverExisting = tttMoves.filter(m => m.uid === moverUid);
+      if (moverExisting.length >= 3) {
+        const oldest = moverExisting[0];
+        tttMoves = tttMoves.filter(m => !(m.idx === oldest.idx && m.uid === oldest.uid));
+      }
+      tttMoves.push({ idx, uid: moverUid });
+
+      const moverIndices = tttMoves.filter(m => m.uid === moverUid).map(m => m.idx);
+      const won = winLines.some(line => line.every(pos => moverIndices.includes(pos)));
+      if (won) {
+        tttWinnerUid = moverUid;
+      } else {
+        tttTurnUid = moverUid === uid ? partnerUid : uid;
+      }
+
+      sendGameEvent('ttt_move', {
+        moves: tttMoves,
+        nextTurnUid: tttTurnUid,
+        winnerUid: tttWinnerUid
+      });
+      renderTttGame(myName, partnerName);
+    };
+  });
+
+  q('#btnResetTtt')?.addEventListener('click', () => {
+    tttMoves = [];
+    tttWinnerUid = '';
+    tttTurnUid = uid;
+    sendGameEvent('ttt_init', { turnUid: tttTurnUid });
+    renderTttGame(myName, partnerName);
+  });
+}
+
+function initBombGame(broadcast = true) {
   const bombIndex = Math.floor(Math.random() * 9);
   bombTiles = Array(9).fill(null).map((_, i) => ({ hasBomb: i === bombIndex, opened: false }));
+  if (broadcast) sendGameEvent('bomb_init', { tiles: bombTiles });
   renderBombGame();
 }
 
@@ -1651,23 +2404,47 @@ function renderBombGame() {
       const idx = Number(b.dataset.idx);
       if (bombTiles[idx].opened) return;
       bombTiles[idx].opened = true;
+      sendGameEvent('bomb_open', { idx });
       if (bombTiles[idx].hasBomb) {
         q('#bombMsg').innerHTML = '💥 <b style="color:#bf4f68;">ドカン！！爆発した人の負け！</b>';
         bombTiles.forEach(tile => tile.opened = true);
       } else {
-        q('#bombMsg').textContent = 'セーフ！次の人にスマホを渡してね';
+        q('#bombMsg').textContent = 'セーフ！次は相手の番です';
       }
       renderBombGame();
     };
   });
 }
 
-// ★ 2人同時回答＆自動採点クイズUI
-function renderQuizArea(myName: string, partnerName: string) {
+// ★ 2人同時回答＆自動採点クイズUI（2台オンライン通信＆1台両対応）
+function renderQuizArea(myName: string, partnerName: string, forceEvaluate = false) {
   const area = q('#quizPlayArea');
   if (!area || !currentQuiz) return;
 
   const ans = currentQuiz.answerIndex;
+
+  const evaluateQuiz = () => {
+    if (quizRevealed) return;
+    quizRevealed = true;
+    let msg = '';
+    const p1Right = quizPickP1 === ans;
+    const p2Right = quizPickP2 === ans;
+    if (p1Right) quizScoreP1++;
+    if (p2Right) quizScoreP2++;
+    if (q('#quizScoreP1Label')) q('#quizScoreP1Label').textContent = `${quizScoreP1}点`;
+    if (q('#quizScoreP2Label')) q('#quizScoreP2Label').textContent = `${quizScoreP2}点`;
+
+    if (p1Right && p2Right) msg = '🎉 ふたりとも大正解！！ (+1点ずつ)';
+    else if (p1Right) msg = `⭕ ${myName}の正解！！ (+1点)`;
+    else if (p2Right) msg = `⭕ ${partnerName}の正解！！ (+1点)`;
+    else msg = '❌ ふたりとも不正解…！';
+
+    showToast(msg, !p1Right && !p2Right);
+  };
+
+  if (forceEvaluate && !quizRevealed) {
+    evaluateQuiz();
+  }
 
   // 選択肢リストの表示
   const optionsHtml = currentQuiz.options.map((opt, idx) => {
@@ -1703,7 +2480,6 @@ function renderQuizArea(myName: string, partnerName: string) {
           btnBg = '#bf4f68'; btnCol = '#fff'; btnBorder = '#bf4f68';
         }
       } else if (picked !== null) {
-        // カンニング防止のため、2人とも選ぶまではどの番号を押したか隠す
         btnBg = '#f5eef0'; btnCol = '#b5a6ac';
       }
       return `<button class="quiz-player-pick" data-player="${player}" data-idx="${idx}" style="flex:1; padding:12px 0; border-radius:10px; border:2px solid ${btnBorder}; background:${btnBg}; color:${btnCol}; font-weight:900; font-size:16px; cursor:pointer;">${idx + 1}</button>`;
@@ -1727,8 +2503,8 @@ function renderQuizArea(myName: string, partnerName: string) {
         ${optionsHtml}
       </div>
 
-      ${makePlayerButtons('P2', quizPickP2, partnerName, '#5995bd')}
       ${makePlayerButtons('P1', quizPickP1, myName, '#e7617d')}
+      ${makePlayerButtons('P2', quizPickP2, partnerName, '#5995bd')}
 
       ${!quizRevealed ? `
         <div style="text-align:center; margin-top:10px;">
@@ -1742,44 +2518,29 @@ function renderQuizArea(myName: string, partnerName: string) {
     </div>
   `;
 
-  const evaluateQuiz = () => {
-    quizRevealed = true;
-    let msg = '';
-    const p1Right = quizPickP1 === ans;
-    const p2Right = quizPickP2 === ans;
-    if (p1Right) quizScoreP1++;
-    if (p2Right) quizScoreP2++;
-    if (q('#quizScoreP1Label')) q('#quizScoreP1Label').textContent = `${quizScoreP1}点`;
-    if (q('#quizScoreP2Label')) q('#quizScoreP2Label').textContent = `${quizScoreP2}点`;
-
-    if (p1Right && p2Right) msg = '🎉 ふたりとも大正解！！ (+1点ずつ)';
-    else if (p1Right) msg = `⭕ ${myName}の正解！！ (+1点)`;
-    else if (p2Right) msg = `⭕ ${partnerName}の正解！！ (+1点)`;
-    else msg = '❌ ふたりとも不正解…！';
-
-    showToast(msg, !p1Right && !p2Right);
-    renderQuizArea(myName, partnerName);
-  };
-
   document.querySelectorAll('.quiz-player-pick').forEach((b: any) => {
     b.onclick = () => {
       if (quizRevealed) return;
       const player = b.dataset.player;
       const idx = Number(b.dataset.idx);
-      if (player === 'P1') quizPickP1 = idx;
-      else quizPickP2 = idx;
+      if (player === 'P1') {
+        quizPickP1 = idx;
+        sendGameEvent('quiz_pick', { pick: idx });
+      } else {
+        quizPickP2 = idx;
+      }
 
       if (quizPickP1 !== null && quizPickP2 !== null) {
         evaluateQuiz();
-      } else {
-        renderQuizArea(myName, partnerName);
       }
+      renderQuizArea(myName, partnerName);
     };
   });
 
   q('#btnRevealSingle')?.addEventListener('click', () => {
     if (quizRevealed) return;
     evaluateQuiz();
+    renderQuizArea(myName, partnerName);
   });
 }
 
@@ -1855,7 +2616,7 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
     b.onclick = () => { 
       setTab(b.dataset.nav); 
       if(b.dataset.nav === 'schedule') renderSchedUI(); 
-      if(b.dataset.nav === 'minigame' && bombTiles.length === 0) initBombGame();
+      if(b.dataset.nav === 'minigame') renderMiniGameTabs();
     };
   });
   document.querySelectorAll('[data-tab]').forEach((b: any) => {
@@ -2230,26 +2991,25 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
   });
 
   // ----------------------------------------
-  // 機能②：🎮 ミニゲーム（反射神経・爆弾・🤖AIクイズ）
+  // 機能②：🎮 ミニゲーム（オンライン2台同時接続＆1台対戦）
   // ----------------------------------------
-  const switchMiniGame = (mode: 'react' | 'bomb' | 'quiz') => {
+  const switchMiniGame = (mode: typeof miniGameMode) => {
     miniGameMode = mode;
-    q('#wrapGameReact').style.display = mode === 'react' ? 'block' : 'none';
-    q('#wrapGameBomb').style.display = mode === 'bomb' ? 'block' : 'none';
-    q('#wrapGameQuiz').style.display = mode === 'quiz' ? 'block' : 'none';
-    q('#btnGameReact').className = `sched-mode-btn ${mode === 'react' ? 'active' : 'inactive'}`;
-    q('#btnGameBomb').className = `sched-mode-btn ${mode === 'bomb' ? 'active' : 'inactive'}`;
-    q('#btnGameQuiz').className = `sched-mode-btn ${mode === 'quiz' ? 'active' : 'inactive'}`;
-    if (mode === 'bomb' && bombTiles.length === 0) initBombGame();
+    sendGameEvent('switch_mode', { mode });
+    renderMiniGameTabs();
   };
 
+  q('#btnGameSync')?.addEventListener('click', () => switchMiniGame('sync'));
+  q('#btnGameTimer')?.addEventListener('click', () => switchMiniGame('timer'));
+  q('#btnGameBalloon')?.addEventListener('click', () => switchMiniGame('balloon'));
+  q('#btnGameTtt')?.addEventListener('click', () => switchMiniGame('ttt'));
   q('#btnGameReact')?.addEventListener('click', () => switchMiniGame('react'));
   q('#btnGameBomb')?.addEventListener('click', () => switchMiniGame('bomb'));
   q('#btnGameQuiz')?.addEventListener('click', () => switchMiniGame('quiz'));
 
   q('#bombResetBtn')?.addEventListener('click', () => {
     q('#bombMsg').textContent = '交互にタップ！ハズレ(💣)で負け！';
-    initBombGame();
+    initBombGame(true);
   });
 
   document.querySelectorAll('.quiz-theme-chip').forEach((chip: any) => {
@@ -2280,11 +3040,12 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
       quizPickP1 = null;
       quizPickP2 = null;
       quizRevealed = false;
+      sendGameEvent('quiz_new', { quiz: currentQuiz });
       renderQuizArea(myName, partnerName);
     } catch (err: any) {
       alert(err.message);
     } finally {
-      btn.textContent = '🎲 次のクイズを出題！';
+      btn.textContent = '🎲 次のクイズを出題！(相手の画面にも同期)';
       btn.disabled = false;
     }
   });
@@ -2477,6 +3238,7 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
   if (q('#clear')) q('#clear').onclick = (e: Event) => {
     e.preventDefault();
     pendingReceiptItems = [];
+    pendingVoiceDetail = null;
     q('#amount').value = '';
     showCalc();
     render(false);
@@ -2557,7 +3319,18 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
   // 🔐 管理者モードのイベントハンドラ
   // ----------------------------------------
   q('#toggleAdminModeBtn')?.addEventListener('click', () => {
-    isAdminMode = !isAdminMode;
+    if (!isAdminMode) {
+      const pw = prompt('🔐 管理者モードを開くにはパスワードを入力してください:');
+      if (pw === null) return;
+      if (pw !== '013000') {
+        showToast('⚠️ パスワードが違います', true);
+        return;
+      }
+      isAdminMode = true;
+      showToast('🔓 管理者モードを解除しました');
+    } else {
+      isAdminMode = false;
+    }
     render(false);
   });
 
@@ -2869,7 +3642,7 @@ function save() {
   const date = getToday();
   const memoPayload = pendingReceiptItems.length > 0
     ? JSON.stringify({ type: 'receipt', items: pendingReceiptItems })
-    : null;
+    : (pendingVoiceDetail ? JSON.stringify(pendingVoiceDetail) : null);
 
   const tempId = 'temp-' + Date.now();
   expenses.unshift({
@@ -2885,6 +3658,7 @@ function save() {
   });
 
   pendingReceiptItems = [];
+  pendingVoiceDetail = null;
   q('#amount').value = ''; 
   q('#title').value = ''; 
   showCalc(); 
