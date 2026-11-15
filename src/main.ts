@@ -849,7 +849,29 @@ async function boot() {
 }
 
 function authView(msg = '') {
-  app.innerHTML = `<main class="app"><div class="brand" style="text-align: center; margin-bottom: 20px;">♥ PairPocket</div>${msg ? `<div class="notice">${esc(msg)}</div>` : ''}<div class="card"><h2>ふたりのお財布へ</h2><input id="email" class="field" type="email" placeholder="メール"><input id="pw" class="field" type="password" placeholder="パスワード"><div class="grid"><button id="up" class="ghost">新規登録</button><button id="in" class="primary">ログイン</button></div></div></main>`;
+  app.innerHTML = `
+    <main class="app" style="padding-top: 48px !important;">
+      <div style="text-align: center; margin-bottom: 28px;">
+        <div class="brand-logo-icon" style="width: 56px; height: 56px; border-radius: 18px; margin: 0 auto 12px; font-size: 26px;">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
+        </div>
+        <div class="brand" style="font-size: 24px;">PairPocket</div>
+        <div class="muted" style="margin-top: 4px;">ふたりの暮らしと家計をスマートに共有</div>
+      </div>
+      ${msg ? `<div class="notice">${esc(msg)}</div>` : ''}
+      <div class="card" style="padding: 24px;">
+        <h2 style="font-size: 18px; margin-bottom: 16px;">アカウントへログイン</h2>
+        <label class="muted">メールアドレス</label>
+        <input id="email" class="field" type="email" placeholder="name@example.com">
+        <label class="muted">パスワード</label>
+        <input id="pw" class="field" type="password" placeholder="••••••••">
+        <div class="grid" style="margin-top: 8px;">
+          <button id="up" class="ghost">新規登録</button>
+          <button id="in" class="primary">ログイン</button>
+        </div>
+      </div>
+    </main>
+  `;
   q('#up').onclick = () => login(true);
   q('#in').onclick = () => login(false);
 }
@@ -862,7 +884,28 @@ async function login(up: boolean) {
 }
 
 function pairView(msg = '') {
-  app.innerHTML = `<main class="app"><div class="brand" style="text-align: center; margin-bottom: 20px;">♥ PairPocket</div>${msg ? `<div class="notice">${esc(msg)}</div>` : ''}<div class="card"><h2>ふたりの部屋を作る</h2><input id="pn" class="field" value="ふたりの家計"><button id="make" class="primary full">作成</button></div><div class="card"><h2>招待コードで参加</h2><input id="code" class="field"><button id="join" class="dark full">参加</button></div><button id="out" class="ghost full" style="margin-top: 15px;">ログアウト</button></main>`;
+  app.innerHTML = `
+    <main class="app" style="padding-top: 40px !important;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <div class="brand" style="font-size: 22px;">PairPocket</div>
+        <div class="muted" style="margin-top: 4px;">ペアリング設定</div>
+      </div>
+      ${msg ? `<div class="notice">${esc(msg)}</div>` : ''}
+      <div class="card">
+        <h2>新しくふたりの部屋を作る</h2>
+        <label class="muted">ルーム名</label>
+        <input id="pn" class="field" value="ふたりの家計">
+        <button id="make" class="primary full">部屋を作成する</button>
+      </div>
+      <div class="card">
+        <h2>招待コードで参加する</h2>
+        <label class="muted">パートナーから共有されたコード</label>
+        <input id="code" class="field" placeholder="招待コードを入力">
+        <button id="join" class="dark full">部屋に参加する</button>
+      </div>
+      <button id="out" class="ghost full" style="margin-top: 12px;">ログアウト</button>
+    </main>
+  `;
   q('#out').onclick = logout;
   q('#make').onclick = async () => {
     const { error } = await supabase.rpc('create_pair', { pair_name: val('#pn') });
@@ -897,8 +940,11 @@ function setTab(tab: string) {
   q('#menuDrawer')?.classList.add('hide');
   document.querySelectorAll('.tabs button').forEach((b: any) => {
     if (['entry', 'home', 'history', 'settings'].includes(b.dataset.tab)) {
-      b.style.fontWeight = b.dataset.tab === tab ? '900' : 'normal';
-      b.style.color = b.dataset.tab === tab ? '#e7617d' : '#9b7783';
+      if (b.dataset.tab === tab) {
+        b.classList.add('active-tab');
+      } else {
+        b.classList.remove('active-tab');
+      }
     }
   });
 }
@@ -1004,6 +1050,14 @@ async function render(isInitial = false) {
     graphHtml = `<div style="padding: 15px 0; text-align: center;"><div class="muted" style="margin-bottom: 5px;">全期間の月平均</div><div style="font-size: 32px; font-weight: 850; color: #e7617d; margin-bottom: 20px;">${yen(avgWater + avgEnergy)}<span style="font-size:14px; font-weight:bold; color:#9b8d93;"> /月</span></div><div style="display: flex; justify-content: center; gap: 40px; margin-top: 15px;"><div><div style="color: #7ab8e6; font-size: 13px; font-weight: bold; margin-bottom: 4px;">水道代 平均</div><div style="font-size: 18px; font-weight: 800;">${yen(avgWater)}</div></div><div><div style="color: #ffaa77; font-size: 13px; font-weight: bold; margin-bottom: 4px;">光熱費 平均</div><div style="font-size: 18px; font-weight: 800;">${yen(avgEnergy)}</div></div></div></div>`;
   }
 
+  const getCatIcon = (cat?: string) => {
+    const map: Record<string, string> = {
+      '食費': '🛒', '外食': '🍽️', '生活': '🧻', '家賃': '🏠',
+      '光熱費': '💡', '交通': '🚃', '娯楽': '🎡', '旅行': '✈️', 'その他': '🛍️'
+    };
+    return map[cat || ''] || '💳';
+  };
+
   const timeline: any[] = [];
   filteredExpenses.forEach(e => timeline.push({ type: 'expense', raw: e.created_at || (e.expense_date + 'T00:00:00Z'), data: e }));
   filteredSettlements.forEach(s => timeline.push({ type: 'settlement', raw: s.settled_at, data: s }));
@@ -1018,9 +1072,9 @@ async function render(isInitial = false) {
     if (item.type === 'settlement') {
       const s = item.data;
       const tStr = fmtTime(item.raw);
-      timelineHtml += `<div style="border-top: 2px dashed #d95875; margin: 28px 0 20px; position: relative;">
-        <span style="position: absolute; top: -11px; left: 50%; transform: translateX(-50%); background: #fff; padding: 0 12px; color: #d95875; font-size: 11px; font-weight: bold; white-space: nowrap; border-radius: 12px; border: 1px solid #d95875;">
-          ✂️ 精算完了: ${yen(s.amount)} (${tStr})
+      timelineHtml += `<div style="border-top: 1.5px dashed #E55B73; margin: 26px 0 18px; position: relative;">
+        <span style="position: absolute; top: -11px; left: 50%; transform: translateX(-50%); background: #FCEEF1; padding: 2px 12px; color: #C9465E; font-size: 11px; font-weight: 700; white-space: nowrap; border-radius: 999px; border: 1px solid #F3DCE2;">
+          ✓ 精算完了 ${yen(s.amount)} · ${tStr}
         </span>
       </div>`;
     } else {
@@ -1035,7 +1089,7 @@ async function render(isInitial = false) {
       if (!isDel && e.updated_at && e.created_at && new Date(e.updated_at).getTime() - new Date(e.created_at).getTime() > 1000) {
         const updatedDate = new Date(e.updated_at);
         const updStr = `${updatedDate.getFullYear()}/${String(updatedDate.getMonth() + 1).padStart(2, '0')}/${String(updatedDate.getDate()).padStart(2, '0')}`;
-        editInfoHtml = `<div style="font-size: 10px; color: #b5a6ac; margin-top: 2px;">✏️ 編集済 (${updStr})</div>`;
+        editInfoHtml = `<div style="font-size: 10px; color: #9A8E94; margin-top: 2px;">✏️ 編集済 (${updStr})</div>`;
       }
 
       let displayTitle = e.title; let delName = '';
@@ -1046,42 +1100,46 @@ async function render(isInitial = false) {
 
       let amountDisplayHtml = '';
       if (isDel) {
-        amountDisplayHtml = `<del style="color:#b5a6ac;"><b>${yen(e.amount)}</b></del>`;
+        amountDisplayHtml = `<del style="color:#9A8E94;"><b style="font-size:15px;">${yen(e.amount)}</b></del>`;
       } else if (receiptItems) {
-        amountDisplayHtml = `<button class="view-receipt-detail" data-id="${e.id}" title="タップしてレシート内訳を表示" style="background:#fff0f3; border:1px solid #ffccd5; color:#e7617d; padding:4px 10px; border-radius:10px; font-weight:800; font-size:15px; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">🧾 ${yen(e.amount)} <span style="font-size:10px;">▾</span></button>`;
+        amountDisplayHtml = `<button class="view-receipt-detail" data-id="${e.id}" title="タップしてレシート内訳を表示" style="background:#FCEEF1; border:1px solid #F3DCE2; color:#C9465E; padding:5px 10px; border-radius:10px; font-weight:800; font-size:14px; cursor:pointer; display:inline-flex; align-items:center; gap:4px; font-variant-numeric:tabular-nums;">🧾 ${yen(e.amount)} <span style="font-size:10px;">▾</span></button>`;
       } else if (smartDetail) {
         const icon = smartDetail.type === 'voice' ? '🎙️' : '🪄';
-        const btnBg = smartDetail.type === 'voice' ? '#fff0f3' : '#f0f4ff';
-        const btnBorder = smartDetail.type === 'voice' ? '#ffccd5' : '#cddafd';
-        const btnCol = smartDetail.type === 'voice' ? '#e7617d' : '#4361ee';
-        amountDisplayHtml = `<button class="view-smart-detail" data-id="${e.id}" title="タップして入力データ・計算詳細を表示" style="background:${btnBg}; border:1px solid ${btnBorder}; color:${btnCol}; padding:4px 10px; border-radius:10px; font-weight:800; font-size:15px; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">${icon} ${yen(e.amount)} <span style="font-size:10px;">▾</span></button>`;
+        const btnBg = smartDetail.type === 'voice' ? '#FCEEF1' : '#EEF2FF';
+        const btnBorder = smartDetail.type === 'voice' ? '#F3DCE2' : '#D8E2FF';
+        const btnCol = smartDetail.type === 'voice' ? '#C9465E' : '#3B5BDB';
+        amountDisplayHtml = `<button class="view-smart-detail" data-id="${e.id}" title="タップして入力データ・計算詳細を表示" style="background:${btnBg}; border:1px solid ${btnBorder}; color:${btnCol}; padding:5px 10px; border-radius:10px; font-weight:800; font-size:14px; cursor:pointer; display:inline-flex; align-items:center; gap:4px; font-variant-numeric:tabular-nums;">${icon} ${yen(e.amount)} <span style="font-size:10px;">▾</span></button>`;
       } else {
-        amountDisplayHtml = `<b>${yen(e.amount)}</b>`;
+        amountDisplayHtml = `<b style="font-size:16px; color:#231E21; font-variant-numeric:tabular-nums;">${yen(e.amount)}</b>`;
       }
 
       timelineHtml += `<div class="expense ${isDel ? 'deleted-log' : ''}">
         <div class="expense-left">
-          ${isDel ? `<del style="color:#b5a6ac;"><b class="break-text">${esc(displayTitle)}</b></del>` : `<b class="break-text">${esc(displayTitle)}</b>`}
-          <div class="muted break-text" style="margin-top: 4px; font-size: 12px;">
-            ${isDel ? `<span class="deleted-badge">削除者: ${esc(delName)}</span>` : ''}
-            ${esc(name(e.payer_id))}・${tStr}
+          <div class="cat-avatar">${getCatIcon(e.category)}</div>
+          <div style="min-width: 0; flex: 1;">
+            ${isDel ? `<del style="color:#9A8E94;"><b class="break-text" style="font-size:14px;">${esc(displayTitle)}</b></del>` : `<b class="break-text" style="font-size:14px; color:#231E21;">${esc(displayTitle)}</b>`}
+            <div class="muted break-text" style="margin-top: 2px; font-size: 11px;">
+              ${isDel ? `<span class="deleted-badge">削除: ${esc(delName)}</span>` : ''}
+              <span style="font-weight:600; color:#6E6369;">${esc(name(e.payer_id))}</span> · ${tStr}
+              ${e.category ? `<span style="background:#F7F4F6; border:1px solid #EFE9EC; padding:1px 6px; border-radius:6px; font-size:10px; margin-left:4px;">${esc(e.category)}</span>` : ''}
+            </div>
+            ${editInfoHtml}
           </div>
-          ${editInfoHtml}
         </div>
         <div class="expense-right">
           ${amountDisplayHtml}
-          <div style="margin-top: 6px; display: flex; gap: 6px; justify-content: flex-end;">
+          <div style="margin-top: 6px; display: flex; gap: 5px; justify-content: flex-end;">
             ${!isDel ? `
-              <button class="edit ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #5995bd; border-radius: 8px;">編集</button>
-              <button class="del ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #bf4f68; border-radius: 8px;">削除</button>
-            ` : `<button class="restore ghost" data-id="${e.id}" style="padding: 4px 10px; font-size: 12px; color: #765d8b; border-radius: 8px;">戻す</button>`}
+              <button class="edit ghost" data-id="${e.id}" style="padding: 3px 9px; font-size: 11px; color: #4A6FA5; border-radius: 7px;">編集</button>
+              <button class="del ghost" data-id="${e.id}" style="padding: 3px 9px; font-size: 11px; color: #C9465E; border-radius: 7px;">削除</button>
+            ` : `<button class="restore ghost" data-id="${e.id}" style="padding: 3px 9px; font-size: 11px; color: #6E5687; border-radius: 7px;">戻す</button>`}
           </div>
         </div>
       </div>`;
     }
   });
 
-  if (timeline.length === 0) timelineHtml = '<p class="muted" style="text-align: center; padding: 20px 0;">まだありません</p>';
+  if (timeline.length === 0) timelineHtml = '<p class="muted" style="text-align: center; padding: 24px 0;">まだ履歴がありません</p>';
 
   const fmtSubDate = (d: any) => {
     if (!d) return '-';
@@ -1094,82 +1152,115 @@ async function render(isInitial = false) {
 
   app.innerHTML = `
     <style>
-      .sched-mode-btn { flex: 1; padding: 11px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; border: none; cursor: pointer; transition: 0.2s; white-space: nowrap;}
-      .sched-mode-btn.active { background: #ff8fa3; color: #fff; box-shadow: 0 4px 10px #ff8fa344; }
-      .sched-mode-btn.inactive { background: #fff0f3; color: #a76777; }
-      .ticket-card { background: #fffafb; border: 1px solid #f0dfe4; border-left: 6px dashed #ff8fa3; border-radius: 14px; padding: 14px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
-      .chip-btn { display: inline-block; background: #fff0f3; color: #a76777; padding: 6px 12px; border-radius: 16px; font-size: 12px; font-weight: bold; margin: 0 6px 6px 0; border: 1px solid #f5dce2; cursor: pointer; }
-      .chip-btn.selected { background: #ff8fa3; color: #fff; border-color: #ff8fa3; }
+      .sched-mode-btn { flex: 1; padding: 10px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; border: 1px solid transparent; cursor: pointer; transition: all 0.18s ease; white-space: nowrap; }
+      .sched-mode-btn.active { background: #231E21; color: #fff; box-shadow: 0 4px 12px rgba(35, 30, 33, 0.16); }
+      .sched-mode-btn.inactive { background: #F7F4F6; color: #6E6369; border-color: #EFE9EC; }
+      .ticket-card { background: #FDF8F9; border: 1px solid #F3DCE2; border-left: 5px solid #E55B73; border-radius: 16px; padding: 14px 16px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+      .chip-btn { display: inline-block; background: #F7F4F6; color: #6E6369; padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; margin: 0 6px 6px 0; border: 1px solid #EFE9EC; cursor: pointer; transition: all 0.15s ease; }
+      .chip-btn.selected { background: #FCEEF1; color: #C9465E; border-color: #E55B73; font-weight: 700; }
+      .ai-tool-tile { flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 10px 8px; border-radius: 13px; font-size: 12px; font-weight: 700; background: #F7F4F6; color: #231E21; border: 1px solid #EFE9EC; cursor: pointer; white-space: nowrap; }
+      .drawer-item { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 13px 14px; margin-bottom: 8px; border-radius: 14px; background: #F7F4F6; border: 1px solid #EFE9EC; color: #231E21; font-size: 14px; font-weight: 700; text-align: left; }
       @keyframes pp-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
       .manual-sync-btn.syncing .sync-icon { display: inline-block; animation: pp-spin 0.7s linear infinite; }
     </style>
     <main class="app">
-      <div class="top" style="margin-top: 10px; position: relative;">
-        <div>
-          <div class="brand">♥ PairPocket</div>
-          <div style="display:flex; align-items:center; gap:8px; margin-left:2px; margin-top:2px;">
-            <span class="muted">${esc(pairName)}</span>
-            <span class="partner-online-badge" style="font-size:10px; font-weight:bold; padding:2px 8px; border-radius:10px; border:1px solid #e0d4d8; background:#f5eef0; color:#9b8d93; display:inline-flex; align-items:center;"></span>
+      <!-- 公式アプリ風ガラスヘッダー -->
+      <header class="top">
+        <div class="brand-wrap">
+          <div class="brand-logo-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
+          </div>
+          <div>
+            <div class="brand">PairPocket</div>
+            <div style="display:flex; align-items:center; gap:6px; margin-top:2px;">
+              <span class="muted" style="font-size:11px; font-weight:600;">${esc(pairName)}</span>
+              <span class="partner-online-badge" style="font-size:10px; font-weight:700; padding:1px 7px; border-radius:999px; border:1px solid #EFE9EC; background:#F7F4F6; color:#9A8E94; display:inline-flex; align-items:center;"></span>
+            </div>
           </div>
         </div>
-        <div style="position: absolute; right: 0; top: 0; display: flex; gap: 6px; align-items: center;">
-          <button class="ghost manual-sync-btn" title="最新データに更新" style="padding: 8px 12px; font-size: 13px; border-radius: 12px; font-weight: bold; color: #e7617d; display: inline-flex; align-items: center; gap: 4px;"><span class="sync-icon">🔄</span> 更新</button>
-          <button id="menuBtn" class="ghost" style="padding: 8px 14px; font-size: 20px; border-radius: 12px;">☰</button>
+        <div style="display: flex; gap: 6px; align-items: center;">
+          <button class="ghost manual-sync-btn" title="最新データに更新" style="padding: 8px 11px; font-size: 12px; border-radius: 12px; font-weight: 700; color: #231E21; display: inline-flex; align-items: center; gap: 4px; background: #F7F4F6;"><span class="sync-icon">🔄</span> 更新</button>
+          <button id="menuBtn" class="ghost" style="width: 38px; height: 38px; padding: 0; font-size: 18px; border-radius: 12px; display: flex; align-items: center; justify-content: center; background: #F7F4F6; color: #231E21;">☰</button>
         </div>
-      </div>
+      </header>
       
-      <!-- ☰ サイドメニュー -->
-      <div id="menuDrawer" class="hide" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 9999; backdrop-filter: blur(2px);">
-        <div id="menuContent" style="position: absolute; top: 0; right: 0; bottom: 0; width: 270px; background: #fffcfc; padding: 20px; box-shadow: -4px 0 15px rgba(0,0,0,0.1); overflow-y: auto;">
-          <button id="closeDrawerBtn" class="ghost" style="position: absolute; top: max(20px, env(safe-area-inset-top)); right: 20px; border-radius: 50%; width: 40px; height: 40px; padding: 0; display:flex; align-items:center; justify-content:center; font-size: 20px;">×</button>
-          <div style="margin-top: calc(max(20px, env(safe-area-inset-top)) + 45px);">
-            <div class="muted" style="margin-bottom: 10px; font-weight: bold;">🤖 AI ＆ お楽しみ機能</div>
-            <button data-nav="recipe" class="ghost full" style="margin-bottom: 10px; text-align: left; font-size: 15px; padding: 14px; background:#fff7f0; color:#b56331; font-weight:bold;"><span style="font-size: 18px; margin-right: 8px;">🍳</span> 今日のAI献立提案</button>
-            <button data-nav="tickets" class="ghost full" style="margin-bottom: 10px; text-align: left; font-size: 15px; padding: 14px; background:#fff0f6; color:#bf4f68; font-weight:bold;"><span style="font-size: 18px; margin-right: 8px;">🎟️</span> ご褒美・おねだり券</button>
-            <button data-nav="minigame" class="ghost full" style="margin-bottom: 18px; text-align: left; font-size: 15px; padding: 14px; background:#fff0f3; color:#a76777; font-weight:bold;"><span style="font-size: 18px; margin-right: 8px;">🎮</span> 待ち時間ミニゲーム</button>
-
-            <div class="muted" style="margin-bottom: 10px; font-weight: bold;">📋 暮らしの管理</div>
-            <button data-nav="schedule" class="ghost full" style="margin-bottom: 10px; text-align: left; font-size: 15px; padding: 14px;"><span style="font-size: 18px; margin-right: 8px;">📅</span> ふたりの予定</button>
-            <button data-nav="utilities" class="ghost full" style="margin-bottom: 10px; text-align: left; font-size: 15px; padding: 14px;"><span style="font-size: 18px; margin-right: 8px;">💧</span> 水道・光熱費</button>
+      <!-- ☰ サイドメニュー（洗練されたドロワー） -->
+      <div id="menuDrawer" class="hide" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(25, 20, 23, 0.42); z-index: 9999; backdrop-filter: blur(4px);">
+        <div id="menuContent" style="position: absolute; top: 0; right: 0; bottom: 0; width: 285px; background: #FFFFFF; padding: 20px 18px; box-shadow: -8px 0 30px rgba(25, 20, 23, 0.14); overflow-y: auto;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top: max(8px, env(safe-area-inset-top)); margin-bottom: 20px; padding-bottom: 14px; border-bottom: 1px solid #EFE9EC;">
+            <div>
+              <div style="font-weight:800; font-size:16px; color:#231E21;">メニュー</div>
+              <div class="muted" style="font-size:11px;">${esc(myName)} ＆ ${esc(partnerName)}</div>
+            </div>
+            <button id="closeDrawerBtn" class="ghost" style="border-radius: 50%; width: 34px; height: 34px; padding: 0; display:flex; align-items:center; justify-content:center; font-size: 18px;">×</button>
           </div>
+
+          <div class="muted" style="margin-bottom: 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;">AI ＆ コミュニケーション</div>
+          <button data-nav="recipe" class="drawer-item">
+            <span style="display:flex; align-items:center; gap:10px;"><span style="width:32px; height:32px; border-radius:9px; background:#FFF4EB; display:inline-flex; align-items:center; justify-content:center; font-size:16px;">🍳</span> 今日のAI献立提案</span>
+            <span style="color:#9A8E94;">›</span>
+          </button>
+          <button data-nav="tickets" class="drawer-item">
+            <span style="display:flex; align-items:center; gap:10px;"><span style="width:32px; height:32px; border-radius:9px; background:#FCEEF1; display:inline-flex; align-items:center; justify-content:center; font-size:16px;">🎟️</span> ご褒美・おねだり券</span>
+            <span style="color:#9A8E94;">›</span>
+          </button>
+          <button data-nav="minigame" class="drawer-item" style="margin-bottom: 20px;">
+            <span style="display:flex; align-items:center; gap:10px;"><span style="width:32px; height:32px; border-radius:9px; background:#F2EEFF; display:inline-flex; align-items:center; justify-content:center; font-size:16px;">🎮</span> オンライン対戦ゲーム</span>
+            <span style="color:#9A8E94;">›</span>
+          </button>
+
+          <div class="muted" style="margin-bottom: 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;">ライフスタイル管理</div>
+          <button data-nav="schedule" class="drawer-item">
+            <span style="display:flex; align-items:center; gap:10px;"><span style="width:32px; height:32px; border-radius:9px; background:#EEF6FF; display:inline-flex; align-items:center; justify-content:center; font-size:16px;">📅</span> ふたりの予定カレンダー</span>
+            <span style="color:#9A8E94;">›</span>
+          </button>
+          <button data-nav="utilities" class="drawer-item">
+            <span style="display:flex; align-items:center; gap:10px;"><span style="width:32px; height:32px; border-radius:9px; background:#EBF9F5; display:inline-flex; align-items:center; justify-content:center; font-size:16px;">💧</span> 水道・光熱費レポート</span>
+            <span style="color:#9A8E94;">›</span>
+          </button>
         </div>
       </div>
 
       <!-- メイン①：入力タブ -->
       <section id="sec-entry">
-        <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 15px; margin-bottom: 15px; padding: 0 4px;">
-          <h2 style="margin: 0; font-size: 20px; color: #3e3438;">新しく追加</h2>
-          <button id="saveTop" class="primary" style="padding: 12px 24px; font-size: 16px; border-radius: 20px; box-shadow: 0 4px 12px rgba(255, 130, 156, 0.4);">追加する</button>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; margin-bottom: 12px; padding: 0 2px;">
+          <div>
+            <h2 style="margin: 0; font-size: 19px; font-weight: 800; color: #231E21;">支出を記録</h2>
+            <div class="muted" style="font-size: 11px;">電卓・音声・AIレシートから素早く入力</div>
+          </div>
+          <button id="saveTop" class="primary" style="padding: 11px 22px; font-size: 14px; border-radius: 999px; font-weight: 800;">＋ 追加する</button>
         </div>
 
         <div class="card" style="margin-top: 0;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 6px; flex-wrap: wrap;">
-            <label class="muted" style="white-space: nowrap;">相手への請求額</label>
-            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-              <button id="btnQuickVoice" type="button" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #ffe5e9; color: #e7617d; border-radius: 12px; font-weight: bold; transition: 0.2s;">🎙️ 音声で入力</button>
-              <button id="btnSmartInput" type="button" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #f0f4ff; color: #4361ee; border-radius: 12px; font-weight: bold;">🪄 文章入力</button>
-              <button id="btnReceipt" type="button" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #fff0f3; color: #a13c52; border-radius: 12px; font-weight: bold;">📷 レシート</button>
-            </div>
+          <!-- AI スマート入力ツールバー -->
+          <div style="display: flex; gap: 7px; margin-bottom: 14px;">
+            <button id="btnQuickVoice" type="button" class="ai-tool-tile" style="background:#FCEEF1; border-color:#F3DCE2; color:#C9465E;">🎙️ 音声で入力</button>
+            <button id="btnSmartInput" type="button" class="ai-tool-tile">🪄 AI文章</button>
+            <button id="btnReceipt" type="button" class="ai-tool-tile">📷 レシート</button>
             <input type="file" id="receiptInput" accept="image/*" style="display:none;">
+          </div>
+
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <label class="muted" style="font-weight: 700; font-size: 11px;">相手への請求額</label>
+            <div id="result" class="result" style="margin: 0;">計算結果：¥0</div>
           </div>
 
           <div class="money">
             <span>¥</span>
-            <input type="text" id="amount" inputmode="numeric" placeholder="1200+350" value="${currentAmt}">
+            <input type="text" id="amount" inputmode="numeric" placeholder="0" value="${currentAmt}">
           </div>
           
+          ${pendingReceiptItems.length > 0 ? `
+            <div style="margin-top: 8px; text-align: right;">
+              <button id="reopenReceiptBtn" type="button" class="ghost" style="padding: 6px 12px; font-size: 11px; background: #FCEEF1; color: #C9465E; border: 1px solid #F3DCE2; border-radius: 10px; font-weight: 700;">
+                🧾 レシート内訳を確認・再編集 (${pendingReceiptItems.length}品)
+              </button>
+            </div>
+          ` : ''}
+
           <div class="calc-buttons">
             <button type="button" data-op="+">＋</button><button type="button" data-op="-">－</button>
             <button type="button" data-op="*">×</button><button type="button" data-op="/">÷</button>
-          </div>
-
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 8px;">
-            <div id="result" class="result" style="margin: 0;">計算結果：¥0</div>
-            ${pendingReceiptItems.length > 0 ? `
-              <button id="reopenReceiptBtn" type="button" class="ghost" style="padding: 6px 12px; font-size: 12px; background: #fff0f3; color: #e7617d; border: 1px solid #ffccd5; border-radius: 12px; font-weight: bold; white-space: nowrap;">
-                🧾 内訳を見る・再編集 (${pendingReceiptItems.length}品)
-              </button>
-            ` : ''}
           </div>
           
           <div class="quick">
@@ -1177,27 +1268,27 @@ async function render(isInitial = false) {
             <button data-plus="1000">+1,000</button><button id="clear">クリア</button>
           </div>
           
-          <button id="split" class="split">÷ 2人で割り勘</button>
+          <button id="split" class="split">÷ 2人で割り勘（50%）にする</button>
           
-          <label class="muted" style="margin-top: 20px; display: block;">立て替えた人</label>
+          <label class="muted" style="margin-top: 18px; display: block; font-weight: 700; font-size: 11px;">立て替えた人</label>
           <div class="payer-buttons">${members.map((m) => `<button type="button" class="payer-btn ${m.user_id === uid ? 'selected' : ''}" data-payer="${m.user_id}">${esc(name(m.user_id))}</button>`).join('')}</div>
           <input id="payer" type="hidden" value="${uid}">
           
-          <div style="border-top: 1px solid #f0dfe4; margin: 20px 0 15px;"></div>
+          <div style="border-top: 1px solid #EFE9EC; margin: 16px 0 14px;"></div>
 
           ${subs.length > 0 ? `
-            <label class="muted" style="display:block; margin-bottom:6px;">定額・サブスクから入力</label>
-            <div style="overflow-x: auto; white-space: nowrap; padding-bottom: 8px; margin-bottom: 15px;">
-              ${subs.map((s:any) => `<div class="sub-fill-btn sub-chip" data-id="${s.id}" style="font-size:12px; padding:6px 12px;">${esc(s.title)}</div>`).join('')}
+            <label class="muted" style="display:block; margin-bottom:6px; font-weight:700; font-size:11px;">定額・サブスクからワンタップ入力</label>
+            <div style="overflow-x: auto; white-space: nowrap; padding-bottom: 6px; margin-bottom: 12px;">
+              ${subs.map((s:any) => `<div class="sub-fill-btn sub-chip" data-id="${s.id}">⚡ ${esc(s.title)}</div>`).join('')}
             </div>
           ` : ''}
 
-          <label class="muted">内容（任意）</label>
-          <input id="title" class="field" placeholder="例：カフェ、スーパー" value="${currentTitle}">
+          <label class="muted" style="font-weight: 700; font-size: 11px;">内容・メモ</label>
+          <input id="title" class="field" placeholder="例：カフェ、スーパー、日用品" value="${currentTitle}">
           
-          <label class="muted">カテゴリー</label>
-          <select id="cat" class="field">
-            <option value="" selected>カテゴリーなし</option>
+          <label class="muted" style="font-weight: 700; font-size: 11px;">カテゴリー</label>
+          <select id="cat" class="field" style="margin-bottom: 4px;">
+            <option value="" selected>カテゴリーを選択（任意）</option>
             ${['食費', '外食', '生活', '家賃', '光熱費', '交通', '娯楽', '旅行', 'その他'].map(x => `<option value="${x}">${x}</option>`).join('')}
           </select>
         </div>
@@ -1205,18 +1296,22 @@ async function render(isInitial = false) {
 
       <!-- メイン②：精算タブ -->
       <section id="sec-home">
-        <div class="card hero" style="padding: 24px; text-align: center; margin-top: 20px;">
-          <div class="muted" style="margin-bottom: 12px;">現在の精算</div>
-          ${members.length < 2 ? '<h2>相手の参加待ち</h2>' : amount < 1 ? '<div class="big" style="font-size: 28px; margin: 15px 0;">ぴったり ✓</div>' : `
-            <h2 style="font-size: 22px; margin-bottom: 10px;">${esc(name(sender))} → ${esc(name(receiver))}</h2>
-            <div class="big" style="margin-bottom: 20px;">${yen(amount)}</div>
-            <div style="border-top: 1px solid rgba(255,255,255,0.3); padding-top: 20px; text-align: left;">
-              <label style="font-size: 12px; color: rgba(255,255,255,0.8);">今回精算する金額</label>
+        <div class="card hero" style="padding: 26px 22px; text-align: center; margin-top: 14px;">
+          <div class="muted" style="margin-bottom: 10px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;">CURRENT BALANCE</div>
+          ${members.length < 2 ? '<h2 style="color:#fff;">パートナーの参加待ち</h2>' : amount < 1 ? '<div class="big" style="font-size: 26px; margin: 18px 0; color:#fff;">精算完了・差額なし ✓</div>' : `
+            <div style="display:inline-flex; align-items:center; gap:10px; background:rgba(255,255,255,0.12); padding:6px 16px; border-radius:999px; font-size:14px; font-weight:700; margin-bottom:8px;">
+              <span>${esc(name(sender))}</span>
+              <span style="opacity:0.65;">━━▶</span>
+              <span>${esc(name(receiver))}</span>
+            </div>
+            <div class="big" style="margin-bottom: 22px; font-size: 42px;">${yen(amount)}</div>
+            <div style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.18); border-radius: 18px; padding: 16px; text-align: left; backdrop-filter: blur(8px);">
+              <label style="font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.85);">今回精算する金額</label>
               <div style="display: flex; gap: 8px; margin-top: 6px;">
-                <input type="number" id="settleAmount" class="field" style="margin: 0; flex: 1; font-size: 18px; font-weight: bold; color:#3e3438;" value="${amount}">
-                <button id="settleFullBtn" style="background: rgba(255,255,255,0.2); color: #fff; border:0; border-radius:12px; padding:0 15px; font-weight:bold;">全額</button>
+                <input type="number" id="settleAmount" class="field" style="margin: 0; flex: 1; font-size: 18px; font-weight: 800; color:#231E21; background:#fff; border:none;" value="${amount}">
+                <button id="settleFullBtn" style="background: rgba(255,255,255,0.22); color: #fff; border: 1px solid rgba(255,255,255,0.3); border-radius: 12px; padding: 0 16px; font-weight: 700;">全額</button>
               </div>
-              <button id="settleBtn" class="settle" style="background: #fff; color: #e7617d; margin-top: 15px; font-size: 16px;">この金額で精算する</button>
+              <button id="settleBtn" class="settle" style="margin-top: 12px;">この金額で精算を記録する</button>
             </div>
           `}
         </div>
@@ -1224,23 +1319,23 @@ async function render(isInitial = false) {
 
       <!-- メイン③：履歴タブ -->
       <section id="sec-history">
-        <div class="card" style="padding: 12px 14px; margin-top: 20px; display: flex; gap: 8px; align-items: center;">
-          <select id="monthSelect" class="field" style="margin:0; font-weight:bold; flex: 1;">
-            <option value="all" ${currentMonth === 'all' ? 'selected' : ''}>すべての履歴を表示</option>
+        <div class="card" style="padding: 12px 14px; margin-top: 14px; display: flex; gap: 8px; align-items: center;">
+          <select id="monthSelect" class="field" style="margin:0; font-weight:700; flex: 1;">
+            <option value="all" ${currentMonth === 'all' ? 'selected' : ''}>すべての期間を表示</option>
             ${months.map(m => `<option value="${m}" ${currentMonth === m ? 'selected' : ''}>${m.split('-')[0]}年${m.split('-')[1]}月</option>`).join('')}
           </select>
-          <button id="btnAiAnalyst" class="ghost" style="padding: 10px 12px; font-size: 12px; font-weight: bold; background: #fff0f6; color: #bf4f68; border-radius: 12px; white-space: nowrap;">🤖 AI分析</button>
+          <button id="btnAiAnalyst" class="ghost" style="padding: 11px 14px; font-size: 12px; font-weight: 700; background: #FCEEF1; color: #C9465E; border-color: #F3DCE2; border-radius: 12px; white-space: nowrap;">🤖 AI家計診断</button>
         </div>
         <div class="card history-scroll">
-          <div style="display:flex; justify-content:space-between; align-items:center; position: sticky; top: 0; background: #fff; padding-bottom: 5px; z-index: 1;">
+          <div style="display:flex; justify-content:space-between; align-items:center; position: sticky; top: 0; background: #fff; padding-bottom: 8px; border-bottom: 1px solid #EFE9EC; z-index: 1;">
             <h2 style="margin: 0;">タイムライン</h2>
-            <span class="muted" style="font-size:11px;">🧾🎙️🪄マークの金額タップで詳細表示</span>
+            <span class="muted" style="font-size:10px;">🧾🎙️🪄タップで内訳表示</span>
           </div>
-          <div style="margin-top: 10px;">${timelineHtml}</div>
+          <div style="margin-top: 6px;">${timelineHtml}</div>
         </div>
         <div class="card history-scroll">
-          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 5px; margin-top: 0; z-index: 1;">精算履歴 (取り消し用)</h2>
-          ${filteredSettlements.map(s => `<div class="expense"><div class="expense-left"><b class="break-text">${esc(name(s.from_user_id))} → ${esc(name(s.to_user_id))}</b><div class="muted">${new Date(s.settled_at).toLocaleDateString('ja-JP')}</div></div><div class="expense-right"><b style="font-size: 16px;">${yen(s.amount)}</b><br><button class="undo-settle ghost" data-id="${s.id}" style="color:#bf4f68; padding:4px 10px; font-size:11px; margin-top:6px; border-radius:6px;">取り消す</button></div></div>`).join('') || '<p class="muted">まだありません</p>'}
+          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 8px; border-bottom: 1px solid #EFE9EC; margin-top: 0; z-index: 1;">精算履歴</h2>
+          ${filteredSettlements.map(s => `<div class="expense"><div class="expense-left"><div class="cat-avatar" style="background:#EBF7F2; color:#1F6E50; border-color:#D2EFE3;">✓</div><div><b class="break-text" style="font-size:14px;">${esc(name(s.from_user_id))} → ${esc(name(s.to_user_id))}</b><div class="muted" style="font-size:11px;">${new Date(s.settled_at).toLocaleDateString('ja-JP')}</div></div></div><div class="expense-right"><b style="font-size: 15px; font-variant-numeric:tabular-nums;">${yen(s.amount)}</b><br><button class="undo-settle ghost" data-id="${s.id}" style="color:#C9465E; padding:3px 9px; font-size:11px; margin-top:4px; border-radius:7px;">取り消す</button></div></div>`).join('') || '<p class="muted" style="text-align:center; padding:16px 0;">まだ精算履歴はありません</p>'}
         </div>
       </section>
 
@@ -1703,16 +1798,28 @@ async function render(isInitial = false) {
         </div>
         <button id="out" class="ghost full">ログアウト</button>
 
-        <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 1.23.0<br>（オンライン同時接続＆4大新ゲーム＆音声自動入力反映版）
+        <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #9A8E94; font-weight: 600;">
+          App Version: 1.24.0<br>（公式アプリ風・洗練UIデザイン刷新版）
         </div>
       </section>
 
       <nav class="tabs">
-        <button data-tab="entry">＋ 入力</button>
-        <button data-tab="home">精算</button>
-        <button data-tab="history">履歴</button>
-        <button data-tab="settings">設定</button>
+        <button data-tab="entry">
+          <span class="tab-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg></span>
+          <span>入力</span>
+        </button>
+        <button data-tab="home">
+          <span class="tab-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10h14l-4-4"/><path d="M17 14H3l4 4"/></svg></span>
+          <span>精算</span>
+        </button>
+        <button data-tab="history">
+          <span class="tab-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h8"/></svg></span>
+          <span>履歴</span>
+        </button>
+        <button data-tab="settings">
+          <span class="tab-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
+          <span>設定</span>
+        </button>
       </nav>
 
       <!-- モーダル1：支出の編集 -->
