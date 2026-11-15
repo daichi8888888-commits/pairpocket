@@ -245,10 +245,10 @@ function setVoiceBtn(state: 'idle' | 'recording' | 'transcribing', sec = 0) {
       modalBtn.disabled = false;
     }
     if (quickBtn) {
-      quickBtn.textContent = `🛑 ${sec}秒 (タップで完了)`;
-      quickBtn.style.background = '#e7617d';
+      quickBtn.textContent = `🛑 ${sec}s 完了`;
+      quickBtn.style.background = '#E55B73';
       quickBtn.style.color = '#fff';
-      quickBtn.style.boxShadow = '0 0 0 3px rgba(231,97,125,0.3)';
+      quickBtn.style.boxShadow = '0 0 0 3px rgba(229,91,115,0.28)';
       quickBtn.disabled = false;
     }
   } else if (state === 'transcribing') {
@@ -259,9 +259,9 @@ function setVoiceBtn(state: 'idle' | 'recording' | 'transcribing', sec = 0) {
       modalBtn.disabled = true;
     }
     if (quickBtn) {
-      quickBtn.textContent = '🤖 AI解析中...';
-      quickBtn.style.background = '#f0f4ff';
-      quickBtn.style.color = '#4361ee';
+      quickBtn.textContent = '🤖 解析中…';
+      quickBtn.style.background = '#EEF2FF';
+      quickBtn.style.color = '#3B5BDB';
       quickBtn.style.boxShadow = 'none';
       quickBtn.disabled = true;
     }
@@ -273,9 +273,9 @@ function setVoiceBtn(state: 'idle' | 'recording' | 'transcribing', sec = 0) {
       modalBtn.disabled = false;
     }
     if (quickBtn) {
-      quickBtn.textContent = '🎙️ 音声で入力';
-      quickBtn.style.background = '#ffe5e9';
-      quickBtn.style.color = '#e7617d';
+      quickBtn.textContent = '🎙️ 音声入力';
+      quickBtn.style.background = '#FCEEF1';
+      quickBtn.style.color = '#C9465E';
       quickBtn.style.boxShadow = 'none';
       quickBtn.disabled = false;
     }
@@ -589,21 +589,24 @@ async function manualSync() {
   }
 }
 
-// オンライン状態のバッジ表示更新
+// オンライン状態のバッジ表示更新（iPhone画面幅に合わせてコンパクト表示対応）
 function updateOnlineBadges() {
   const partnerMember = members.find(m => m.user_id !== uid);
   const pName = partnerMember?.profiles?.display_name || '相手';
   document.querySelectorAll('.partner-online-badge').forEach((el: any) => {
+    const isCompact = el.dataset.compact === '1';
+    const labelOnline = isCompact ? 'オンライン' : `${esc(pName)}: オンライン`;
+    const labelOffline = isCompact ? 'オフライン' : `${esc(pName)}: オフライン`;
     if (partnerOnline) {
-      el.innerHTML = `<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#4caf50; box-shadow:0 0 6px #4caf50; margin-right:4px;"></span>${esc(pName)}: オンライン`;
-      el.style.background = '#e8f5e9';
-      el.style.color = '#2e7d32';
-      el.style.borderColor = '#a5d6a7';
+      el.innerHTML = `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#22c55e; box-shadow:0 0 5px #22c55e; margin-right:4px; flex-shrink:0;"></span>${labelOnline}`;
+      el.style.background = '#ecfdf5';
+      el.style.color = '#15803d';
+      el.style.borderColor = '#bbf7d0';
     } else {
-      el.innerHTML = `<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#b5a6ac; margin-right:4px;"></span>${esc(pName)}: オフライン`;
-      el.style.background = '#f5eef0';
-      el.style.color = '#9b8d93';
-      el.style.borderColor = '#e0d4d8';
+      el.innerHTML = `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#b5a6ac; margin-right:4px; flex-shrink:0;"></span>${labelOffline}`;
+      el.style.background = '#F7F4F6';
+      el.style.color = '#9A8E94';
+      el.style.borderColor = '#EFE9EC';
     }
   });
 }
@@ -1158,29 +1161,29 @@ async function render(isInitial = false) {
       .ticket-card { background: #FDF8F9; border: 1px solid #F3DCE2; border-left: 5px solid #E55B73; border-radius: 16px; padding: 14px 16px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
       .chip-btn { display: inline-block; background: #F7F4F6; color: #6E6369; padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; margin: 0 6px 6px 0; border: 1px solid #EFE9EC; cursor: pointer; transition: all 0.15s ease; }
       .chip-btn.selected { background: #FCEEF1; color: #C9465E; border-color: #E55B73; font-weight: 700; }
-      .ai-tool-tile { flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 10px 8px; border-radius: 13px; font-size: 12px; font-weight: 700; background: #F7F4F6; color: #231E21; border: 1px solid #EFE9EC; cursor: pointer; white-space: nowrap; }
+      .ai-tool-tile { width: 100%; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 3px; padding: 9px 4px; border-radius: 12px; font-size: 11.5px; font-weight: 700; background: #F7F4F6; color: #231E21; border: 1px solid #EFE9EC; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .drawer-item { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 13px 14px; margin-bottom: 8px; border-radius: 14px; background: #F7F4F6; border: 1px solid #EFE9EC; color: #231E21; font-size: 14px; font-weight: 700; text-align: left; }
       @keyframes pp-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
       .manual-sync-btn.syncing .sync-icon { display: inline-block; animation: pp-spin 0.7s linear infinite; }
     </style>
     <main class="app">
-      <!-- 公式アプリ風ガラスヘッダー -->
+      <!-- 公式アプリ風ガラスヘッダー（iPhone全機種で1行に美しく収まる設計） -->
       <header class="top">
         <div class="brand-wrap">
           <div class="brand-logo-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
           </div>
-          <div>
-            <div class="brand">PairPocket</div>
-            <div style="display:flex; align-items:center; gap:6px; margin-top:2px;">
-              <span class="muted" style="font-size:11px; font-weight:600;">${esc(pairName)}</span>
-              <span class="partner-online-badge" style="font-size:10px; font-weight:700; padding:1px 7px; border-radius:999px; border:1px solid #EFE9EC; background:#F7F4F6; color:#9A8E94; display:inline-flex; align-items:center;"></span>
+          <div style="min-width: 0; flex: 1; overflow: hidden;">
+            <div style="display:flex; align-items:center; gap:6px;">
+              <div class="brand">PairPocket</div>
+              <span class="partner-online-badge" data-compact="1" style="font-size:10px; font-weight:700; padding:1px 6px; border-radius:999px; border:1px solid #EFE9EC; background:#F7F4F6; color:#9A8E94; display:inline-flex; align-items:center; white-space:nowrap; flex-shrink:0;"></span>
             </div>
+            <div class="muted" style="font-size:11px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.25; margin-top:1px;">${esc(pairName)}</div>
           </div>
         </div>
-        <div style="display: flex; gap: 6px; align-items: center;">
-          <button class="ghost manual-sync-btn" title="最新データに更新" style="padding: 8px 11px; font-size: 12px; border-radius: 12px; font-weight: 700; color: #231E21; display: inline-flex; align-items: center; gap: 4px; background: #F7F4F6;"><span class="sync-icon">🔄</span> 更新</button>
-          <button id="menuBtn" class="ghost" style="width: 38px; height: 38px; padding: 0; font-size: 18px; border-radius: 12px; display: flex; align-items: center; justify-content: center; background: #F7F4F6; color: #231E21;">☰</button>
+        <div style="display: flex; gap: 6px; align-items: center; flex-shrink: 0; white-space: nowrap;">
+          <button class="ghost manual-sync-btn" title="最新データに更新" style="padding: 7px 10px; font-size: 12px; border-radius: 11px; font-weight: 700; color: #231E21; display: inline-flex; align-items: center; gap: 3px; background: #F7F4F6; white-space: nowrap; flex-shrink: 0;"><span class="sync-icon">🔄</span> 更新</button>
+          <button id="menuBtn" class="ghost" style="width: 34px; height: 34px; padding: 0; font-size: 17px; border-radius: 11px; display: flex; align-items: center; justify-content: center; background: #F7F4F6; color: #231E21; flex-shrink: 0;">☰</button>
         </div>
       </header>
       
@@ -1223,22 +1226,19 @@ async function render(isInitial = false) {
 
       <!-- メイン①：入力タブ -->
       <section id="sec-entry">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; margin-bottom: 12px; padding: 0 2px;">
-          <div>
-            <h2 style="margin: 0; font-size: 19px; font-weight: 800; color: #231E21;">支出を記録</h2>
-            <div class="muted" style="font-size: 11px;">電卓・音声・AIレシートから素早く入力</div>
-          </div>
-          <button id="saveTop" class="primary" style="padding: 11px 22px; font-size: 14px; border-radius: 999px; font-weight: 800;">＋ 追加する</button>
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 4px; margin-bottom: 10px; padding: 0 2px;">
+          <h2 style="margin: 0; font-size: 18px; font-weight: 800; color: #231E21; white-space: nowrap;">支出を記録</h2>
+          <button id="saveTop" class="primary" style="padding: 10px 20px; font-size: 14px; border-radius: 999px; font-weight: 800; white-space: nowrap; flex-shrink: 0;">＋ 追加する</button>
         </div>
 
         <div class="card" style="margin-top: 0;">
-          <!-- AI スマート入力ツールバー -->
-          <div style="display: flex; gap: 7px; margin-bottom: 14px;">
-            <button id="btnQuickVoice" type="button" class="ai-tool-tile" style="background:#FCEEF1; border-color:#F3DCE2; color:#C9465E;">🎙️ 音声で入力</button>
+          <!-- AI スマート入力ツールバー（iPhone幅で3等分1行にピタッと収まるグリッド） -->
+          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-bottom: 12px;">
+            <button id="btnQuickVoice" type="button" class="ai-tool-tile" style="background:#FCEEF1; border-color:#F3DCE2; color:#C9465E;">🎙️ 音声入力</button>
             <button id="btnSmartInput" type="button" class="ai-tool-tile">🪄 AI文章</button>
             <button id="btnReceipt" type="button" class="ai-tool-tile">📷 レシート</button>
-            <input type="file" id="receiptInput" accept="image/*" style="display:none;">
           </div>
+          <input type="file" id="receiptInput" accept="image/*" style="display:none;">
 
           <div style="display: flex; justify-content: space-between; align-items: center;">
             <label class="muted" style="font-weight: 700; font-size: 11px;">相手への請求額</label>
@@ -1421,9 +1421,9 @@ async function render(isInitial = false) {
 
       <!-- サブ機能②：🎮 待ち時間ミニゲーム（2台オンライン同時接続＆1台対戦両対応） -->
       <section id="sec-minigame" style="display: none;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; margin-top: 10px;">
-          <h2 style="margin: 0; font-size: 18px;">🎮 ふたりでオンライン対戦</h2>
-          <span class="partner-online-badge" style="font-size:11px; font-weight:bold; padding:4px 10px; border-radius:12px; border:1px solid #e0d4d8; background:#f5eef0; color:#9b8d93; display:inline-flex; align-items:center;"></span>
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; margin-top: 10px;">
+          <h2 style="margin: 0; font-size: 17px; white-space: nowrap;">🎮 オンライン対戦</h2>
+          <span class="partner-online-badge" style="font-size:11px; font-weight:700; padding:4px 10px; border-radius:999px; border:1px solid #EFE9EC; background:#F7F4F6; color:#9A8E94; display:inline-flex; align-items:center; white-space:nowrap; flex-shrink:0;"></span>
         </div>
         <p class="muted" style="margin-top:0; margin-bottom:10px; font-size:11px;">2人それぞれのスマホで開くとリアルタイム通信対戦！1台のスマホを交互に触っても遊べます。</p>
         
@@ -1671,20 +1671,20 @@ async function render(isInitial = false) {
 
         <div class="card">
           <h2>プロフィール設定</h2>
-          <div style="display:flex; gap:8px; margin-top:6px;">
-            <input id="myName" class="field" style="margin:0;" value="${esc(myName)}" placeholder="あなたの名前">
-            <button id="updateNameBtn" class="dark" style="min-width:70px;">更新</button>
+          <div style="display:flex; gap:8px; margin-top:6px; align-items:center;">
+            <input id="myName" class="field" style="margin:0; flex:1; min-width:0;" value="${esc(myName)}" placeholder="あなたの名前">
+            <button id="updateNameBtn" class="dark" style="padding:12px 16px; white-space:nowrap; flex-shrink:0;">更新</button>
           </div>
         </div>
 
         <!-- 🔐 管理者モード -->
-        <div class="card" style="border: 2px solid ${isAdminMode ? '#e7617d' : '#f0dfe4'}; background: ${isAdminMode ? '#fffafb' : '#fff'};">
-          <div style="display:flex; justify-content:space-between; align-items:center;">
-            <div>
-              <h2 style="margin:0; font-size:17px; color:#3e3438;">🛠️ 管理者モード</h2>
-              <div class="muted" style="font-size:11px; margin-top:2px;">完全削除・部屋名変更・詳細メンテナンス</div>
+        <div class="card" style="border: 2px solid ${isAdminMode ? '#e7617d' : '#EFE9EC'}; background: ${isAdminMode ? '#fffafb' : '#fff'};">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+            <div style="min-width:0; flex:1;">
+              <h2 style="margin:0; font-size:16px; color:#231E21; white-space:nowrap;">🛠️ 管理者モード</h2>
+              <div class="muted" style="font-size:11px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">完全削除・部屋名変更・詳細メンテナンス</div>
             </div>
-            <button id="toggleAdminModeBtn" class="${isAdminMode ? 'primary' : 'ghost'}" style="padding:8px 14px; font-size:12px; border-radius:12px; font-weight:bold;">
+            <button id="toggleAdminModeBtn" class="${isAdminMode ? 'primary' : 'ghost'}" style="padding:8px 14px; font-size:12px; border-radius:12px; font-weight:bold; white-space:nowrap; flex-shrink:0;">
               ${isAdminMode ? '🔓 閉じる' : '🔐 開く'}
             </button>
           </div>
