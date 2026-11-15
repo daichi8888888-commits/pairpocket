@@ -76,6 +76,18 @@ function parseReceiptMemo(memo: any): { name: string, price: number, split: 'min
   return null;
 }
 
+// メモ欄から音声・AI文章入力の詳細データを抽出するヘルパー
+function parseSmartMemo(memo: any): { type: 'voice' | 'smart', rawText: string, note: string, totalAmount?: number, splitText?: string } | null {
+  if (!memo || typeof memo !== 'string' || !memo.startsWith('{')) return null;
+  try {
+    const obj = JSON.parse(memo);
+    if (obj && (obj.type === 'voice' || obj.type === 'smart')) {
+      return obj;
+    }
+  } catch {}
+  return null;
+}
+
 // 緑のふわっと出る通知（トースト）
 function showToast(msg: string, isError = false) {
   let t = q('#toastMsg');
@@ -334,20 +346,28 @@ async function handleVoiceStop() {
     const partnerUid = partnerMember?.user_id || uid;
 
     if (voiceDirectMode) {
-      // ワンタップ直接登録モード：音声から直接JSON抽出して即登録！
-      const prompt = `この音声からペアの支出リストを抽出しJSON配列のみ出力せよ。
+      // ワンタップ直接登録モード：音声から文字起こし＆JSON抽出して即登録！
+      const prompt = `この音声を正確に日本語で文字起こししつつ、ペアの支出リストを抽出しJSONオブジェクトのみ出力せよ。
 ルール:
-- claimAmountは「立て替えた人が相手に請求する金額(整数)」。割り勘・折半や特に指定がない共有支出は支払総額の半分(50%)、相手の分を全額立て替えた場合は100%にする。
-- payerは話し手(私)が払ったなら"me"、相手(${partnerName})が払ったなら"partner"。特に言及がなければ"me"。
-- categoryは["食費","外食","生活","家賃","光熱費","交通","娯楽","旅行","その他"]のいずれか。
-- 音声が聞き取れない・金額が含まれない場合は空配列 [] を出力せよ。
-出力例: [{"title":"カフェ","claimAmount":700,"payer":"me","category":"外食","note":"1400円の割り勘"}]`;
+- transcriptは音声の正確な文字起こしテキスト（例：「私がカフェで1400円払って割り勘」）。
+- itemsは抽出した支出配列:
+  - title: 品目・内容
+  - totalAmount: 支払った総額(整数、わかる場合。不明ならclaimAmountと同額)
+  - claimAmount: 「立て替えた人が相手に請求する金額(整数)」。割り勘・折半や特に指定がない共有支出は支払総額の半分(50%)、相手の分を全額立て替えた場合は100%にする。
+  - splitText: 「2人で割り勘 (50%)」「相手分を全額立替 (100%)」などの計算内訳説明
+  - payer: 話し手(私)が払ったなら"me"、相手(${partnerName})が払ったなら"partner"。特に言及がなければ"me"。
+  - category: ["食費","外食","生活","家賃","光熱費","交通","娯楽","旅行","その他"]のいずれか。
+  - note: 補足メモ（例：「1,400円の割り勘」）
+- 音声が聞き取れない・金額が含まれない場合は {"transcript":"","items":[]} を出力せよ。
+出力例: {"transcript":"カフェで1400円払って割り勘","items":[{"title":"カフェ","totalAmount":1400,"claimAmount":700,"splitText":"2人で割り勘 (50%)","payer":"me","category":"外食","note":"1,400円の割り勘"}]}`;
 
       const resText = await callGeminiAPI([
         { text: prompt },
         { inlineData: { mimeType, data } }
       ], true);
-      const parsed = JSON.parse(resText);
+      const parsedObj = JSON.parse(resText);
+      const parsed = Array.isArray(parsedObj) ? parsedObj : (parsedObj?.items || []);
+      const voiceTranscript = (typeof parsedObj?.transcript === 'string' && parsedObj.transcript) ? parsedObj.transcript : '';
       if (!Array.isArray(parsed) || parsed.length === 0) {
         showToast('⚠️ 金額や内容が聞き取れませんでした。例：「カフェ1400円割り勘」のように話してください', true);
         return;
@@ -362,6 +382,13 @@ async function handleVoiceStop() {
         if (amt <= 0) continue;
         const title = item.title || '支出';
         const cat = item.category || 'その他';
+        const memoJson = JSON.stringify({
+          type: 'voice',
+          rawText: voiceTranscript || item.note || `${title} ${amt}円`,
+          note: item.note || '',
+          totalAmount: Number(item.totalAmount) || amt,
+          splitText: item.splitText || ''
+        });
         expenses.unshift({
           id: 'temp-' + Date.now() + Math.random(),
           pair_id: pair,
@@ -370,10 +397,11 @@ async function handleVoiceStop() {
           payer_id: payerId,
           category: cat,
           expense_date: date,
+          memo: memoJson,
           created_at: new Date().toISOString()
         });
         await supabase.rpc('add_shared_expense', {
-          input_pair_id: pair, input_title: title, input_amount: amt, input_payer_id: payerId, input_category: cat, input_expense_date: date, input_memo: null
+          input_pair_id: pair, input_title: title, input_amount: amt, input_payer_id: payerId, input_category: cat, input_expense_date: date, input_memo: memoJson
         });
         addedCount++;
         addedTitles.push(`${title}(${yen(amt)})`);
@@ -784,6 +812,7 @@ async function render(isInitial = false) {
       const tStr = fmtTime(item.raw, e.memo, e.expense_date);
       const isDel = typeof e.title === 'string' && e.title.startsWith('[削除済]');
       const receiptItems = parseReceiptMemo(e.memo);
+      const smartDetail = parseSmartMemo(e.memo);
       
       let editInfoHtml = '';
       if (!isDel && e.updated_at && e.created_at && new Date(e.updated_at).getTime() - new Date(e.created_at).getTime() > 1000) {
@@ -803,6 +832,12 @@ async function render(isInitial = false) {
         amountDisplayHtml = `<del style="color:#b5a6ac;"><b>${yen(e.amount)}</b></del>`;
       } else if (receiptItems) {
         amountDisplayHtml = `<button class="view-receipt-detail" data-id="${e.id}" title="タップしてレシート内訳を表示" style="background:#fff0f3; border:1px solid #ffccd5; color:#e7617d; padding:4px 10px; border-radius:10px; font-weight:800; font-size:15px; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">🧾 ${yen(e.amount)} <span style="font-size:10px;">▾</span></button>`;
+      } else if (smartDetail) {
+        const icon = smartDetail.type === 'voice' ? '🎙️' : '🪄';
+        const btnBg = smartDetail.type === 'voice' ? '#fff0f3' : '#f0f4ff';
+        const btnBorder = smartDetail.type === 'voice' ? '#ffccd5' : '#cddafd';
+        const btnCol = smartDetail.type === 'voice' ? '#e7617d' : '#4361ee';
+        amountDisplayHtml = `<button class="view-smart-detail" data-id="${e.id}" title="タップして入力データ・計算詳細を表示" style="background:${btnBg}; border:1px solid ${btnBorder}; color:${btnCol}; padding:4px 10px; border-radius:10px; font-weight:800; font-size:15px; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">${icon} ${yen(e.amount)} <span style="font-size:10px;">▾</span></button>`;
       } else {
         amountDisplayHtml = `<b>${yen(e.amount)}</b>`;
       }
@@ -976,7 +1011,7 @@ async function render(isInitial = false) {
         <div class="card history-scroll">
           <div style="display:flex; justify-content:space-between; align-items:center; position: sticky; top: 0; background: #fff; padding-bottom: 5px; z-index: 1;">
             <h2 style="margin: 0;">タイムライン</h2>
-            <span class="muted" style="font-size:11px;">🧾マークの金額をタップで内訳表示</span>
+            <span class="muted" style="font-size:11px;">🧾🎙️🪄マークの金額タップで詳細表示</span>
           </div>
           <div style="margin-top: 10px;">${timelineHtml}</div>
         </div>
@@ -1305,7 +1340,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 21.2.0<br>（ワンタップ即録音＆全自動AI登録対応版）
+          App Version: 21.3.0<br>（音声・AI入力データ履歴タップ詳細表示対応版）
         </div>
       </section>
 
@@ -1764,6 +1799,55 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
     };
   });
 
+  // 履歴の金額タップで「音声・AI入力データ詳細」を表示
+  document.querySelectorAll('.view-smart-detail').forEach((b: any) => {
+    b.onclick = () => {
+      const exp = expenses.find(x => x.id === b.dataset.id);
+      if (!exp) return;
+      const detail = parseSmartMemo(exp.memo);
+      if (!detail) return;
+
+      const isVoice = detail.type === 'voice';
+      q('#receiptDetailTitle').textContent = `${isVoice ? '🎙️ 音声入力データ詳細' : '🪄 AI文章入力データ詳細'}`;
+      q('#receiptDetailMeta').textContent = `品目: ${exp.title} (${exp.category || 'その他'}) ・ 支払: ${nameFn(exp.payer_id)} ・ ${fmtTime(exp.created_at || exp.expense_date, exp.memo, exp.expense_date)}`;
+
+      const totalAmt = detail.totalAmount || exp.amount;
+      const splitLabel = detail.splitText || detail.note || (totalAmt !== exp.amount ? '割り勘 (50%)' : 'そのまま請求');
+
+      q('#receiptDetailList').innerHTML = `
+        <div style="padding: 10px 0;">
+          <div class="muted" style="font-size:11px; font-weight:bold; margin-bottom:6px;">${isVoice ? '🗣️ 聞き取った音声テキスト（入力データ）' : '📝 入力した文章データ'}</div>
+          <div style="background:#fffafb; border:1px solid #f0dfe4; border-left:4px solid ${isVoice ? '#e7617d' : '#4361ee'}; border-radius:10px; padding:12px; font-size:14px; font-weight:bold; color:#3e3438; line-height:1.5;">
+            「${esc(detail.rawText || '')}」
+          </div>
+          ${detail.note ? `
+            <div class="muted" style="font-size:11px; font-weight:bold; margin-top:14px; margin-bottom:6px;">🤖 AIの解釈・計算メモ</div>
+            <div style="background:#f8f9fa; border:1px solid #e9ecef; border-radius:10px; padding:10px 12px; font-size:13px; color:#59464e;">
+              ${esc(detail.note)} ${detail.splitText ? `（${esc(detail.splitText)}）` : ''}
+            </div>
+          ` : ''}
+        </div>
+      `;
+
+      q('#receiptDetailSummary').innerHTML = `
+        <div style="display:flex; justify-content:space-between; font-size:13px; color:#59464e; margin-bottom:6px;">
+          <span>元の支払総額:</span>
+          <b>${yen(totalAmt)}</b>
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:13px; color:#59464e; margin-bottom:8px;">
+          <span>計算方法:</span>
+          <b>${esc(splitLabel)}</b>
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:16px; color:#e7617d; font-weight:800; border-top:1px dashed #f0dfe4; padding-top:8px;">
+          <span>相手への請求額:</span>
+          <span>${yen(exp.amount)}</span>
+        </div>
+      `;
+
+      q('#receiptDetailModal').style.display = 'flex';
+    };
+  });
+
   q('#closeReceiptDetailBtn')?.addEventListener('click', () => {
     q('#receiptDetailModal').style.display = 'none';
   });
@@ -1819,16 +1903,18 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
     try {
       const prompt = `以下の文章からペアの支出リストを抽出しJSON配列のみ出力せよ。
 ルール:
+- totalAmountは支払った総額(整数、わかる場合。不明ならclaimAmountと同額)。
 - claimAmountは「立て替えた人が相手に請求する金額(整数)」。割り勘・折半や特に指定がない共有支出は支払総額の半分(50%)、相手の分を全額立て替えた場合は100%にする。
+- splitTextは「2人で割り勘 (50%)」「相手分を全額立替 (100%)」などの計算方法の説明。
 - payerは私が払ったなら"me"、相手(${partnerName})が払ったなら"partner"。
 - categoryは["食費","外食","生活","家賃","光熱費","交通","娯楽","旅行","その他"]のいずれか。
-出力例: [{"title":"カフェ","claimAmount":700,"payer":"me","category":"外食","note":"1400円の割り勘"}]
+出力例: [{"title":"カフェ","totalAmount":1400,"claimAmount":700,"splitText":"2人で割り勘 (50%)","payer":"me","category":"外食","note":"1,400円の割り勘"}]
 入力文: ${textInput}`;
 
       const resText = await callGeminiAPI([{ text: prompt }], true);
       const parsed = JSON.parse(resText);
       if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('支出が読み取れませんでした');
-      smartInputState = parsed;
+      smartInputState = parsed.map((p: any) => ({ ...p, rawText: textInput }));
 
       q('#smartInputPreview').style.display = 'block';
       q('#smartInputPreview').innerHTML = `<div class="muted" style="font-size:11px; margin-bottom:6px;">解析結果（${smartInputState.length}件）：</div>` + smartInputState.map(item => `
@@ -1852,10 +1938,18 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
   q('#applySmartInputBtn')?.addEventListener('click', async () => {
     if (smartInputState.length === 0) return;
     const date = getToday();
-    for (const item of smartInputState) {
+    const rawInputText = val('#smartInputText').trim();
+    for (const item of smartInputState as any[]) {
       const payerId = item.payer === 'partner' ? partnerUid : uid;
       const amt = Math.round(Number(item.claimAmount) || 0);
       if (amt <= 0) continue;
+      const memoJson = JSON.stringify({
+        type: 'smart',
+        rawText: item.rawText || rawInputText || item.note || '',
+        note: item.note || '',
+        totalAmount: Number(item.totalAmount) || amt,
+        splitText: item.splitText || ''
+      });
       expenses.unshift({
         id: 'temp-' + Date.now() + Math.random(),
         pair_id: pair,
@@ -1864,10 +1958,11 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
         payer_id: payerId,
         category: item.category || 'その他',
         expense_date: date,
+        memo: memoJson,
         created_at: new Date().toISOString()
       });
       await supabase.rpc('add_shared_expense', {
-        input_pair_id: pair, input_title: item.title || '支出', input_amount: amt, input_payer_id: payerId, input_category: item.category || 'その他', input_expense_date: date, input_memo: null
+        input_pair_id: pair, input_title: item.title || '支出', input_amount: amt, input_payer_id: payerId, input_category: item.category || 'その他', input_expense_date: date, input_memo: memoJson
       });
     }
     q('#smartInputModal').style.display = 'none';
