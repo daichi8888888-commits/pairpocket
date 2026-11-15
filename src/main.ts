@@ -15,8 +15,15 @@ let schedSelectedDates: string[] = [];
 let receiptState: { name: string, price: number, split: 'mine' | 'half' | 'partner' }[] = [];
 let pendingReceiptItems: { name: string, price: number, split: 'mine' | 'half' | 'partner' }[] = [];
 let smartInputState: { title: string, claimAmount: number, payer: 'me' | 'partner', category: string, note: string }[] = [];
-let speechRec: any = null;
+// 音声入力（録音 → Gemini文字起こし）用の状態
+let voiceRecorder: MediaRecorder | null = null;
+let voiceStream: MediaStream | null = null;
+let voiceChunks: Blob[] = [];
+let voiceTimer: any = null;
+let voiceCancelled = false;
 let isListening = false;
+let isTranscribing = false;
+const VOICE_MAX_SEC = 60;
 
 // 献立AI用の状態
 let recipeImageBase64 = '';
@@ -170,6 +177,159 @@ async function callGeminiAPI(parts: any[], jsonMode = true): Promise<string> {
   return text;
 }
 
+// ----------------------------------------
+// 🎙️ 音声入力：録音 → Gemini で文字起こし
+// ----------------------------------------
+function setVoiceBtn(state: 'idle' | 'recording' | 'transcribing', sec = 0) {
+  const btn = q('#btnVoiceInput');
+  if (!btn) return;
+  if (state === 'recording') {
+    btn.textContent = `🛑 録音中 ${sec}秒 (タップで終了)`;
+    btn.style.background = '#e7617d';
+    btn.style.color = '#fff';
+    btn.disabled = false;
+  } else if (state === 'transcribing') {
+    btn.textContent = '🤖 文字起こし中...';
+    btn.style.background = '#f0f4ff';
+    btn.style.color = '#4361ee';
+    btn.disabled = true;
+  } else {
+    btn.textContent = '🎙️ マイクで話す';
+    btn.style.background = '#ffe5e9';
+    btn.style.color = '#e7617d';
+    btn.disabled = false;
+  }
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+function pickRecorderMime(): string {
+  const MR: any = (window as any).MediaRecorder;
+  if (!MR || typeof MR.isTypeSupported !== 'function') return '';
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/aac'];
+  return candidates.find(t => MR.isTypeSupported(t)) || '';
+}
+
+function releaseVoiceStream() {
+  if (voiceTimer) { clearInterval(voiceTimer); voiceTimer = null; }
+  voiceStream?.getTracks().forEach(t => t.stop());
+  voiceStream = null;
+}
+
+async function startVoiceRecording() {
+  if (!navigator.mediaDevices?.getUserMedia || !(window as any).MediaRecorder) {
+    alert('この端末・ブラウザは録音に対応していません🙇‍♂️\nキーボードの「🎤マイク」ボタンで音声入力してください！');
+    q('#smartInputText')?.focus();
+    return;
+  }
+
+  try {
+    voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err: any) {
+    const name = err?.name || '';
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      alert('マイクの使用が許可されていません🎙️\n\n【iPhone】設定アプリ → Safari → マイク → 「許可」\n【Android】Chromeのアドレスバー左の🔒 → 権限 → マイクを許可\n\n許可したあと、もう一度お試しください。');
+    } else if (name === 'NotFoundError') {
+      alert('マイクが見つかりませんでした。');
+    } else {
+      alert(`マイクを起動できませんでした (${name || 'unknown'})`);
+    }
+    releaseVoiceStream();
+    return;
+  }
+
+  const mime = pickRecorderMime();
+  try {
+    voiceRecorder = mime ? new MediaRecorder(voiceStream, { mimeType: mime }) : new MediaRecorder(voiceStream);
+  } catch {
+    voiceRecorder = new MediaRecorder(voiceStream);
+  }
+
+  voiceChunks = [];
+  voiceCancelled = false;
+  voiceRecorder.ondataavailable = (e: BlobEvent) => { if (e.data && e.data.size > 0) voiceChunks.push(e.data); };
+  voiceRecorder.onstop = () => { handleVoiceStop(); };
+  voiceRecorder.start();
+  isListening = true;
+
+  let sec = 0;
+  setVoiceBtn('recording', sec);
+  voiceTimer = setInterval(() => {
+    sec++;
+    setVoiceBtn('recording', sec);
+    if (sec >= VOICE_MAX_SEC) stopVoiceRecording(false);
+  }, 1000);
+}
+
+function stopVoiceRecording(cancel: boolean) {
+  voiceCancelled = cancel;
+  if (voiceTimer) { clearInterval(voiceTimer); voiceTimer = null; }
+  if (voiceRecorder && voiceRecorder.state !== 'inactive') {
+    try { voiceRecorder.stop(); } catch { handleVoiceStop(); }
+  } else {
+    handleVoiceStop();
+  }
+}
+
+async function handleVoiceStop() {
+  const recorderMime = voiceRecorder?.mimeType || pickRecorderMime() || 'audio/webm';
+  releaseVoiceStream();
+  isListening = false;
+  voiceRecorder = null;
+
+  if (voiceCancelled) { voiceChunks = []; setVoiceBtn('idle'); return; }
+
+  const blob = new Blob(voiceChunks, { type: recorderMime });
+  voiceChunks = [];
+  if (blob.size < 1500) {
+    setVoiceBtn('idle');
+    showToast('⚠️ 録音が短すぎました。もう一度話してください', true);
+    return;
+  }
+
+  isTranscribing = true;
+  setVoiceBtn('transcribing');
+  try {
+    const data = await blobToBase64(blob);
+    const mimeType = recorderMime.split(';')[0];
+    const transcript = (await callGeminiAPI([
+      { text: 'この音声を日本語で正確に文字起こししてください。金額は算用数字（例: 2400円）で書いてください。文字起こし結果のテキストのみを出力し、説明や前置きは一切不要です。無音や聞き取れない場合は何も出力しないでください。' },
+      { inlineData: { mimeType, data } }
+    ], false)).trim();
+
+    if (!transcript) {
+      showToast('⚠️ 音声が聞き取れませんでした', true);
+      return;
+    }
+    const ta = q('#smartInputText');
+    if (ta) {
+      const cur = ta.value.trim();
+      ta.value = cur ? `${cur}。${transcript}` : transcript;
+    }
+    showToast('🎙️ 文字起こし完了！AIで解析します');
+    q('#btnRunSmartParse')?.click();
+  } catch (err: any) {
+    alert(err?.message || '文字起こしに失敗しました');
+  } finally {
+    isTranscribing = false;
+    setVoiceBtn('idle');
+  }
+}
+
+// モーダル表示中・録音中など、再描画すると操作が途切れる状態か
+function isUiBusy() {
+  if (isListening || isTranscribing) return true;
+  return ['#editModal', '#receiptModal', '#receiptDetailModal', '#smartInputModal', '#aiReportModal']
+    .some(id => q(id)?.style.display === 'flex');
+}
+
 // サブスク自動追加機能（月末対応 ＆ 0時判定対応）
 async function processAutoSubs() {
   if (!pair || isProcessingSubs) return;
@@ -283,6 +443,8 @@ function setupRealtime() {
     .subscribe();
 }
 
+let pendingSyncRender = false;
+
 // リアルタイム＆バックグラウンド同期機能（追加・編集・削除・名前変更すべて検知）
 async function backgroundSync(forceCheck = false) {
   if (!pair || (!forceCheck && document.visibilityState !== 'visible') || isManualSyncing) return;
@@ -293,13 +455,22 @@ async function backgroundSync(forceCheck = false) {
   await load();
   const newSig = getDataSignature();
   
+  const activeTags = ['INPUT', 'TEXTAREA', 'SELECT'];
+  const isTyping = activeTags.includes(document.activeElement?.tagName || '');
+  const canRender = !isTyping && !isUiBusy();
+
   if (oldSig !== newSig) {
-    const activeTags = ['INPUT', 'TEXTAREA', 'SELECT'];
-    const isTyping = activeTags.includes(document.activeElement?.tagName || '');
-    if (!isTyping) {
+    if (canRender) {
       render(false);
+      pendingSyncRender = false;
+    } else {
+      // 入力中・録音中・モーダル表示中は画面を作り直さず、操作が終わってから反映
+      pendingSyncRender = true;
     }
     showToast('🔄 パートナーの更新を同期しました');
+  } else if (pendingSyncRender && canRender) {
+    render(false);
+    pendingSyncRender = false;
   }
 }
 
@@ -1042,7 +1213,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 21.0.0<br>（ワンタップ更新ボタン＆即時リアルタイム同期対応版）
+          App Version: 21.1.0<br>（AI音声入力 録音＆Gemini文字起こし対応版）
         </div>
       </section>
 
@@ -1126,7 +1297,7 @@ async function render(isInitial = false) {
             <h2 style="margin: 0; font-size: 18px;">🪄 AI文章・音声入力</h2>
             <button id="btnVoiceInput" type="button" class="ghost" style="padding: 6px 12px; font-size: 12px; background: #ffe5e9; color: #e7617d; border-radius: 14px; font-weight: bold;">🎙️ マイクで話す</button>
           </div>
-          <p class="muted" style="margin-top: 0; font-size: 11px;">上の「🎙️マイクで話す」を押して喋るか、キーボードのマイクで入力すると、AIが自動で支払いを分解します。</p>
+          <p class="muted" style="margin-top: 0; font-size: 11px;">「🎙️マイクで話す」を押して話し、もう一度押すと終了（最大60秒）。AIが文字起こしして、自動で支払いを分解します。</p>
           <textarea id="smartInputText" class="field" rows="3" placeholder="例：私がランチ2400円払って割り勘。相手がガソリン代3600円出して割り勘。" style="resize: none;"></textarea>
           <button id="btnRunSmartParse" class="dark full" style="margin-bottom: 12px;">🤖 AIで解析する</button>
           
@@ -1522,63 +1693,19 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
     q('#smartInputModal').style.display = 'flex';
   });
   q('#closeSmartInputBtn')?.addEventListener('click', () => {
-    if (speechRec && isListening) {
-      try { speechRec.stop(); } catch {}
-      isListening = false;
-    }
+    if (isListening) stopVoiceRecording(true);
     q('#smartInputModal').style.display = 'none';
   });
 
-  // ★ 音声認識マイクボタンの処理
-  q('#btnVoiceInput')?.addEventListener('click', () => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert('お使いのブラウザは直接の音声認識ボタンに対応していません。\nキーボード右下にある「🎤マイクマーク」を押して話しかけてください！');
-      q('#smartInputText')?.focus();
+  // ★ 音声入力ボタン：録音 → Geminiで文字起こし → 自動でAI解析
+  // （Web Speech APIはiPhoneのホーム画面アプリ(PWA)等で動かないため、録音方式に変更）
+  q('#btnVoiceInput')?.addEventListener('click', async () => {
+    if (isTranscribing) return;
+    if (isListening) {
+      stopVoiceRecording(false);
       return;
     }
-
-    if (isListening && speechRec) {
-      speechRec.stop();
-      return;
-    }
-
-    speechRec = new SpeechRecognition();
-    speechRec.lang = 'ja-JP';
-    speechRec.interimResults = false;
-    speechRec.continuous = false;
-
-    const btn = q('#btnVoiceInput');
-    speechRec.onstart = () => {
-      isListening = true;
-      btn.textContent = '🛑 聞き取り中... (タップで停止)';
-      btn.style.background = '#e7617d';
-      btn.style.color = '#fff';
-    };
-
-    speechRec.onresult = (event: any) => {
-      const transcript = event.results?.[0]?.[0]?.transcript || '';
-      if (transcript) {
-        const cur = val('#smartInputText');
-        q('#smartInputText').value = cur ? `${cur}。${transcript}` : transcript;
-        showToast('🎙️ 音声を入力しました！');
-      }
-    };
-
-    speechRec.onerror = () => {
-      showToast('⚠️ 音声が聞き取れませんでした', true);
-    };
-
-    speechRec.onend = () => {
-      isListening = false;
-      if (btn) {
-        btn.textContent = '🎙️ マイクで話す';
-        btn.style.background = '#ffe5e9';
-        btn.style.color = '#e7617d';
-      }
-    };
-
-    speechRec.start();
+    await startVoiceRecording();
   });
 
   q('#btnRunSmartParse')?.addEventListener('click', async () => {
