@@ -45,6 +45,12 @@ let quizPickP2: number | null = null;
 let quizRevealed = false;
 let isProcessingSubs = false;
 
+// 🔐 管理者モード用の状態
+let isAdminMode = false;
+let adminFilter: 'all' | 'deleted' = 'all';
+let adminSelectedExpIds: string[] = [];
+let hideDeletedInTimeline = localStorage.getItem('pp_hide_deleted') === '1';
+
 const getToday = () => {
   const d = new Date();
   d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
@@ -811,6 +817,7 @@ async function render(isInitial = false) {
       const e = item.data;
       const tStr = fmtTime(item.raw, e.memo, e.expense_date);
       const isDel = typeof e.title === 'string' && e.title.startsWith('[削除済]');
+      if (isDel && hideDeletedInTimeline) return;
       const receiptItems = parseReceiptMemo(e.memo);
       const smartDetail = parseSmartMemo(e.memo);
       
@@ -1332,15 +1339,130 @@ async function render(isInitial = false) {
             <button id="updateNameBtn" class="dark" style="min-width:70px;">更新</button>
           </div>
         </div>
-        <div class="card" style="border: 2px solid #ffe5e9; background: #fffcfc;">
-          <h2 style="color:#a13c52; margin-top:0;">危険な操作</h2>
-          <button id="delAllBtn" class="ghost full" style="color:#a13c52; background:#ffe5e9; margin-bottom: 12px;">すべての履歴を削除する</button>
-          <button id="resetUtilsBtn" class="ghost full" style="color:#a13c52; background:#ffe5e9;">水道代・光熱費の記録をすべて削除</button>
+
+        <!-- 🔐 管理者モード -->
+        <div class="card" style="border: 2px solid ${isAdminMode ? '#e7617d' : '#f0dfe4'}; background: ${isAdminMode ? '#fffafb' : '#fff'};">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <h2 style="margin:0; font-size:17px; color:#3e3438;">🛠️ 管理者モード</h2>
+              <div class="muted" style="font-size:11px; margin-top:2px;">完全削除・部屋名変更・詳細メンテナンス</div>
+            </div>
+            <button id="toggleAdminModeBtn" class="${isAdminMode ? 'primary' : 'ghost'}" style="padding:8px 14px; font-size:12px; border-radius:12px; font-weight:bold;">
+              ${isAdminMode ? '🔓 閉じる' : '🔐 開く'}
+            </button>
+          </div>
+
+          ${isAdminMode ? (() => {
+            const deletedCount = expenses.filter(e => typeof e.title === 'string' && e.title.startsWith('[削除済]')).length;
+            const adminTargetExps = expenses
+              .slice()
+              .sort((a, b) => new Date(b.created_at || b.expense_date).getTime() - new Date(a.created_at || a.expense_date).getTime())
+              .filter(e => adminFilter === 'all' ? true : (typeof e.title === 'string' && e.title.startsWith('[削除済]')));
+
+            return `
+              <div style="border-top: 1px dashed #e7617d; margin-top: 14px; padding-top: 14px;">
+
+                <!-- 1. 履歴の完全削除（個別選択＆削除済一括消去） -->
+                <div style="background:#fff; border:1px solid #f0dfe4; border-radius:12px; padding:12px; margin-bottom:12px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                    <b style="font-size:14px; color:#a13c52;">🗑️ 支出データの完全削除（DBから抹消）</b>
+                    <span class="muted" style="font-size:11px;">全${expenses.length}件 (削除済:${deletedCount}件)</span>
+                  </div>
+                  <p class="muted" style="font-size:11px; margin-top:0; margin-bottom:8px;">通常の削除では「[削除済]」として薄く残りますが、ここから完全削除すると履歴から跡形もなく消去されます。</p>
+
+                  <div style="display:flex; gap:6px; margin-bottom:8px; flex-wrap:wrap;">
+                    <button type="button" class="admin-filter-btn ghost" data-filter="all" style="flex:1; padding:6px 10px; font-size:11px; border-radius:8px; ${adminFilter === 'all' ? 'background:#ff8fa3; color:#fff; font-weight:bold;' : ''}">すべて表示 (${expenses.length})</button>
+                    <button type="button" class="admin-filter-btn ghost" data-filter="deleted" style="flex:1; padding:6px 10px; font-size:11px; border-radius:8px; ${adminFilter === 'deleted' ? 'background:#ff8fa3; color:#fff; font-weight:bold;' : ''}">[削除済]のみ (${deletedCount})</button>
+                  </div>
+
+                  ${deletedCount > 0 ? `
+                    <button id="btnPurgeAllDeleted" type="button" class="ghost full" style="background:#ffe5e9; color:#a13c52; font-size:12px; padding:8px; border-radius:10px; font-weight:bold; margin-bottom:8px;">
+                      🧹 薄くなっている「[削除済]」(${deletedCount}件) をすべて完全消去
+                    </button>
+                  ` : ''}
+
+                  <div style="max-height:220px; overflow-y:auto; border:1px solid #f5e9ed; border-radius:8px; padding:4px 8px; margin-bottom:8px; background:#fffcfc;">
+                    ${adminTargetExps.map(e => {
+                      const isDel = typeof e.title === 'string' && e.title.startsWith('[削除済]');
+                      const cleanTitle = isDel ? e.title.replace('[削除済] ', '').split('::').slice(1).join('::') : e.title;
+                      const checked = adminSelectedExpIds.includes(e.id) ? 'checked' : '';
+                      return `
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #f5e9ed; font-size:12px; gap:6px;">
+                          <label style="display:flex; align-items:center; gap:6px; flex:1; cursor:pointer; overflow:hidden;">
+                            <input type="checkbox" class="admin-exp-check" data-id="${e.id}" ${checked} style="width:16px; height:16px; accent-color:#e7617d;">
+                            <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                              ${isDel ? '<span style="background:#eee; color:#777; padding:1px 5px; border-radius:4px; font-size:10px;">削除済</span> ' : ''}
+                              <b>${esc(cleanTitle)}</b>
+                              <span class="muted" style="font-size:10px;">(${esc(name(e.payer_id))}・${e.expense_date || ''})</span>
+                            </div>
+                          </label>
+                          <div style="display:flex; align-items:center; gap:6px; white-space:nowrap;">
+                            <b style="color:${isDel ? '#999' : '#e7617d'};">${yen(e.amount)}</b>
+                            <button type="button" class="admin-hard-del-one ghost" data-id="${e.id}" style="padding:3px 8px; font-size:10px; background:#ffe5e9; color:#a13c52; border-radius:6px; font-weight:bold;">完全削除</button>
+                          </div>
+                        </div>
+                      `;
+                    }).join('') || '<div class="muted" style="text-align:center; padding:12px; font-size:12px;">対象の履歴がありません</div>'}
+                  </div>
+
+                  <div style="display:flex; gap:6px;">
+                    <button id="btnAdminSelectAll" type="button" class="ghost" style="padding:8px 10px; font-size:11px; border-radius:8px;">全選択/解除</button>
+                    <button id="btnAdminDeleteSelected" type="button" class="primary" style="flex:1; padding:8px 12px; font-size:12px; border-radius:8px; background:#bf4f68;">選択した項目 (${adminSelectedExpIds.length}件) を完全削除</button>
+                  </div>
+                </div>
+
+                <!-- 2. タイムラインの表示設定（削除済みログを隠す/表示する） -->
+                <div style="background:#fff; border:1px solid #f0dfe4; border-radius:12px; padding:12px; margin-bottom:12px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                      <b style="font-size:13px; color:#3e3438;">👁️ 履歴で「[削除済]」の薄いログを隠す</b>
+                      <div class="muted" style="font-size:11px;">ONにすると通常削除した項目もタイムラインに表示されません</div>
+                    </div>
+                    <button id="btnToggleHideDeleted" type="button" class="${hideDeletedInTimeline ? 'primary' : 'ghost'}" style="padding:6px 12px; font-size:12px; border-radius:10px; font-weight:bold;">
+                      ${hideDeletedInTimeline ? 'ON (非表示中)' : 'OFF (表示中)'}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 3. 部屋名（ペア名）の変更 -->
+                <div style="background:#fff; border:1px solid #f0dfe4; border-radius:12px; padding:12px; margin-bottom:12px;">
+                  <b style="font-size:13px; color:#3e3438; display:block; margin-bottom:6px;">🏠 部屋名（ペア名）の変更</b>
+                  <div style="display:flex; gap:6px;">
+                    <input id="adminPairName" class="field" style="margin:0; flex:1;" value="${esc(pairName)}" placeholder="ふたりの家計">
+                    <button id="btnUpdatePairName" type="button" class="dark" style="padding:0 14px; font-size:12px;">変更</button>
+                  </div>
+                </div>
+
+                <!-- 4. サブスク自動追加の強制リセット＆今すぐ実行 -->
+                <div style="background:#fff; border:1px solid #f0dfe4; border-radius:12px; padding:12px; margin-bottom:12px;">
+                  <b style="font-size:13px; color:#3e3438; display:block; margin-bottom:4px;">🔄 サブスク自動追加の管理・強制実行</b>
+                  <div class="muted" style="font-size:11px; margin-bottom:8px;">今月の自動追加済みフラグをリセットして、今すぐ自動追加を再判定させたい時に使います。</div>
+                  <button id="btnResetSubFlags" type="button" class="ghost full" style="font-size:12px; padding:8px; border-radius:8px; font-weight:bold;">今月のサブスク処理済フラグをリセットして再実行</button>
+                </div>
+
+                <!-- 5. 全データバックアップ（CSV書き出し）＆キャッシュクリア -->
+                <div style="background:#fff; border:1px solid #f0dfe4; border-radius:12px; padding:12px; margin-bottom:12px;">
+                  <b style="font-size:13px; color:#3e3438; display:block; margin-bottom:6px;">📦 データ書き出し・キャッシュ管理</b>
+                  <div style="display:flex; gap:6px;">
+                    <button id="btnExportCsv" type="button" class="ghost" style="flex:1; font-size:12px; padding:8px; border-radius:8px; font-weight:bold;">📥 履歴をCSV出力</button>
+                    <button id="btnClearLocalCache" type="button" class="ghost" style="flex:1; font-size:12px; padding:8px; border-radius:8px; font-weight:bold;">🧹 キャッシュ再構築</button>
+                  </div>
+                </div>
+
+                <!-- 6. 一括初期化（危険な操作） -->
+                <div style="background:#fff5f7; border:1px solid #ffccd5; border-radius:12px; padding:12px;">
+                  <b style="font-size:13px; color:#a13c52; display:block; margin-bottom:8px;">⚠️ 全データの一括初期化</b>
+                  <button id="delAllBtn" class="ghost full" style="color:#a13c52; background:#ffe5e9; margin-bottom: 8px; font-size:12px; padding:10px;">すべての支出・精算履歴を完全に削除する</button>
+                  <button id="resetUtilsBtn" class="ghost full" style="color:#a13c52; background:#ffe5e9; font-size:12px; padding:10px;">水道代・光熱費の記録をすべて削除</button>
+                </div>
+              </div>
+            `;
+          })() : ''}
         </div>
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 1.21.3<br>（音声・AI入力データ履歴タップ詳細表示対応版）
+          App Version: 1.22.0<br>（管理者モード＆完全削除機能 搭載版）
         </div>
       </section>
 
@@ -2429,6 +2551,175 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
   q('#resetUtilsBtn')?.addEventListener('click', () => {
     if (!confirm('【警告】\n水道代・光熱費の記録をすべて削除します。\nよろしいですか？')) return;
     localStorage.removeItem(`utils_${pair}`); alert('水道代・光熱費の記録をすべて削除しました'); render();
+  });
+
+  // ----------------------------------------
+  // 🔐 管理者モードのイベントハンドラ
+  // ----------------------------------------
+  q('#toggleAdminModeBtn')?.addEventListener('click', () => {
+    isAdminMode = !isAdminMode;
+    render(false);
+  });
+
+  document.querySelectorAll('.admin-filter-btn').forEach((b: any) => {
+    b.onclick = () => {
+      adminFilter = b.dataset.filter;
+      adminSelectedExpIds = [];
+      render(false);
+    };
+  });
+
+  document.querySelectorAll('.admin-exp-check').forEach((cb: any) => {
+    cb.onchange = () => {
+      const id = cb.dataset.id;
+      if (cb.checked) {
+        if (!adminSelectedExpIds.includes(id)) adminSelectedExpIds.push(id);
+      } else {
+        adminSelectedExpIds = adminSelectedExpIds.filter(x => x !== id);
+      }
+      const delSelBtn = q('#btnAdminDeleteSelected');
+      if (delSelBtn) delSelBtn.textContent = `選択した項目 (${adminSelectedExpIds.length}件) を完全削除`;
+    };
+  });
+
+  q('#btnAdminSelectAll')?.addEventListener('click', () => {
+    const visibleChecks = Array.from(document.querySelectorAll('.admin-exp-check')) as HTMLInputElement[];
+    const allIds = visibleChecks.map(c => c.dataset.id!);
+    const allSelected = allIds.length > 0 && allIds.every(id => adminSelectedExpIds.includes(id));
+    adminSelectedExpIds = allSelected ? [] : allIds;
+    render(false);
+  });
+
+  // 1件ずつ完全削除（DBから物理削除）
+  document.querySelectorAll('.admin-hard-del-one').forEach((b: any) => {
+    b.onclick = async () => {
+      const id = b.dataset.id;
+      const target = expenses.find(x => x.id === id);
+      if (!target) return;
+      const cleanTitle = typeof target.title === 'string' && target.title.startsWith('[削除済]')
+        ? target.title.replace('[削除済] ', '').split('::').slice(1).join('::')
+        : target.title;
+      if (!confirm(`「${cleanTitle} (${yen(target.amount)})」をデータベースから【完全削除】しますか？\n（薄く残るログも完全に消去され、元に戻せません）`)) return;
+
+      expenses = expenses.filter(x => x.id !== id);
+      adminSelectedExpIds = adminSelectedExpIds.filter(x => x !== id);
+      render(false);
+
+      const { error } = await supabase.from('expenses').delete().eq('id', id);
+      if (error) {
+        showToast('⚠️ 完全削除に失敗しました: ' + error.message, true);
+        await load();
+        render(false);
+      } else {
+        showToast('🗑️ 履歴から完全に消去しました');
+        await load();
+        render(false);
+      }
+    };
+  });
+
+  // 選択した複数項目を一括完全削除
+  q('#btnAdminDeleteSelected')?.addEventListener('click', async () => {
+    if (adminSelectedExpIds.length === 0) return showToast('⚠️ 完全削除する項目にチェックを入れてください', true);
+    if (!confirm(`選択した ${adminSelectedExpIds.length} 件の履歴をデータベースから【完全削除】しますか？\n（この操作は元に戻せません）`)) return;
+
+    const idsToDelete = [...adminSelectedExpIds];
+    expenses = expenses.filter(x => !idsToDelete.includes(x.id));
+    adminSelectedExpIds = [];
+    render(false);
+
+    const { error } = await supabase.from('expenses').delete().in('id', idsToDelete);
+    if (error) {
+      showToast('⚠️ 完全削除に失敗しました: ' + error.message, true);
+    } else {
+      showToast(`🗑️ ${idsToDelete.length}件を完全に消去しました`);
+    }
+    await load();
+    render(false);
+  });
+
+  // 薄くなっている「[削除済]」ログのみを一括で完全消去
+  q('#btnPurgeAllDeleted')?.addEventListener('click', async () => {
+    const delIds = expenses
+      .filter(e => typeof e.title === 'string' && e.title.startsWith('[削除済]'))
+      .map(e => e.id);
+    if (delIds.length === 0) return showToast('削除済みのログはありません');
+    if (!confirm(`薄くなっている「[削除済]」ログ（${delIds.length}件）をすべてデータベースから【完全消去】しますか？`)) return;
+
+    expenses = expenses.filter(x => !delIds.includes(x.id));
+    adminSelectedExpIds = adminSelectedExpIds.filter(id => !delIds.includes(id));
+    render(false);
+
+    const { error } = await supabase.from('expenses').delete().in('id', delIds);
+    if (error) {
+      showToast('⚠️ 完全消去に失敗しました: ' + error.message, true);
+    } else {
+      showToast(`🧹 削除済みログ ${delIds.length}件を完全消去しました！`);
+    }
+    await load();
+    render(false);
+  });
+
+  // タイムラインで「[削除済]」を隠すトグル
+  q('#btnToggleHideDeleted')?.addEventListener('click', () => {
+    hideDeletedInTimeline = !hideDeletedInTimeline;
+    localStorage.setItem('pp_hide_deleted', hideDeletedInTimeline ? '1' : '0');
+    showToast(hideDeletedInTimeline ? '👁️ タイムラインの[削除済]ログを非表示にしました' : '👁️ タイムラインの[削除済]ログを表示するようにしました');
+    render(false);
+  });
+
+  // 部屋名（ペア名）の変更
+  q('#btnUpdatePairName')?.addEventListener('click', async () => {
+    const newPairName = val('#adminPairName').trim();
+    if (!newPairName) return showToast('⚠️ 部屋名を入力してください', true);
+    const { error } = await supabase.from('pairs').update({ name: newPairName }).eq('id', pair);
+    if (error) return showToast('⚠️ 部屋名の変更に失敗しました: ' + error.message, true);
+    showToast('🏠 部屋名を更新しました！');
+    render(false);
+  });
+
+  // サブスク処理済フラグのリセット＆再実行
+  q('#btnResetSubFlags')?.addEventListener('click', async () => {
+    if (!confirm('登録されているサブスクの「今月の自動追加済みフラグ」をリセットし、今すぐ自動追加チェックを再実行しますか？')) return;
+    const subs = JSON.parse(localStorage.getItem(`subs_${pair}`) || '[]');
+    subs.forEach((s: any) => { delete s.lastProcessedMonth; });
+    localStorage.setItem(`subs_${pair}`, JSON.stringify(subs));
+    showToast('🔄 フラグをリセットしました。自動追加を実行します...');
+    await processAutoSubs();
+    render(false);
+  });
+
+  // CSVエクスポート
+  q('#btnExportCsv')?.addEventListener('click', () => {
+    if (expenses.length === 0) return showToast('⚠️ 出力する履歴がありません', true);
+    const header = '日付,内容,請求額,支払者,カテゴリー,ステータス\n';
+    const rows = expenses.map(e => {
+      const isDel = typeof e.title === 'string' && e.title.startsWith('[削除済]');
+      const cleanTitle = (isDel ? e.title.replace('[削除済] ', '').split('::').slice(1).join('::') : (e.title || '')).replace(/"/g, '""');
+      const payerName = nameFn(e.payer_id).replace(/"/g, '""');
+      const cat = (e.category || 'その他').replace(/"/g, '""');
+      const status = isDel ? '削除済' : '有効';
+      return `"${e.expense_date || ''}","${cleanTitle}",${e.amount},"${payerName}","${cat}","${status}"`;
+    }).join('\n');
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const blob = new Blob([bom, header + rows], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `PairPocket_Expenses_${getToday()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('📥 CSVファイルを書き出しました');
+  });
+
+  // キャッシュ再構築
+  q('#btnClearLocalCache')?.addEventListener('click', async () => {
+    localStorage.removeItem('pp_cache');
+    await load();
+    render(false);
+    showToast('🧹 キャッシュを再構築しました！');
   });
 
   document.querySelectorAll('[data-payer]').forEach((b: any) => b.onclick = () => {
