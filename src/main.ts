@@ -1799,7 +1799,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #9A8E94; font-weight: 600;">
-          App Version: 1.24.0<br>（公式アプリ風・洗練UIデザイン刷新版）
+          App Version: 1.24.1<br>（公式アプリ風UI＆ホーム画面アイコン刷新版）
         </div>
       </section>
 
