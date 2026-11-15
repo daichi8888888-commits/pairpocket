@@ -178,26 +178,55 @@ async function callGeminiAPI(parts: any[], jsonMode = true): Promise<string> {
 }
 
 // ----------------------------------------
-// 🎙️ 音声入力：録音 → Gemini で文字起こし
+// 🎙️ 音声入力：ワンタップ録音 → Gemini で解析＆自動登録
 // ----------------------------------------
+let voiceDirectMode = true;
+
 function setVoiceBtn(state: 'idle' | 'recording' | 'transcribing', sec = 0) {
-  const btn = q('#btnVoiceInput');
-  if (!btn) return;
+  const modalBtn = q('#btnVoiceInput');
+  const quickBtn = q('#btnQuickVoice');
   if (state === 'recording') {
-    btn.textContent = `🛑 録音中 ${sec}秒 (タップで終了)`;
-    btn.style.background = '#e7617d';
-    btn.style.color = '#fff';
-    btn.disabled = false;
+    if (modalBtn) {
+      modalBtn.textContent = `🛑 録音中 ${sec}秒 (タップで終了)`;
+      modalBtn.style.background = '#e7617d';
+      modalBtn.style.color = '#fff';
+      modalBtn.disabled = false;
+    }
+    if (quickBtn) {
+      quickBtn.textContent = `🛑 ${sec}秒 (タップで完了)`;
+      quickBtn.style.background = '#e7617d';
+      quickBtn.style.color = '#fff';
+      quickBtn.style.boxShadow = '0 0 0 3px rgba(231,97,125,0.3)';
+      quickBtn.disabled = false;
+    }
   } else if (state === 'transcribing') {
-    btn.textContent = '🤖 文字起こし中...';
-    btn.style.background = '#f0f4ff';
-    btn.style.color = '#4361ee';
-    btn.disabled = true;
+    if (modalBtn) {
+      modalBtn.textContent = '🤖 AI解析中...';
+      modalBtn.style.background = '#f0f4ff';
+      modalBtn.style.color = '#4361ee';
+      modalBtn.disabled = true;
+    }
+    if (quickBtn) {
+      quickBtn.textContent = '🤖 AI解析中...';
+      quickBtn.style.background = '#f0f4ff';
+      quickBtn.style.color = '#4361ee';
+      quickBtn.style.boxShadow = 'none';
+      quickBtn.disabled = true;
+    }
   } else {
-    btn.textContent = '🎙️ マイクで話す';
-    btn.style.background = '#ffe5e9';
-    btn.style.color = '#e7617d';
-    btn.disabled = false;
+    if (modalBtn) {
+      modalBtn.textContent = '🎙️ マイクで話す';
+      modalBtn.style.background = '#ffe5e9';
+      modalBtn.style.color = '#e7617d';
+      modalBtn.disabled = false;
+    }
+    if (quickBtn) {
+      quickBtn.textContent = '🎙️ 音声で追加';
+      quickBtn.style.background = '#ffe5e9';
+      quickBtn.style.color = '#e7617d';
+      quickBtn.style.boxShadow = 'none';
+      quickBtn.disabled = false;
+    }
   }
 }
 
@@ -223,10 +252,10 @@ function releaseVoiceStream() {
   voiceStream = null;
 }
 
-async function startVoiceRecording() {
+async function startVoiceRecording(direct = true) {
+  voiceDirectMode = direct;
   if (!navigator.mediaDevices?.getUserMedia || !(window as any).MediaRecorder) {
-    alert('この端末・ブラウザは録音に対応していません🙇‍♂️\nキーボードの「🎤マイク」ボタンで音声入力してください！');
-    q('#smartInputText')?.focus();
+    alert('この端末・ブラウザは録音に対応していません🙇‍♂️\n「🪄文章入力」からキーボードのマイクボタンで音声入力してください！');
     return;
   }
 
@@ -261,6 +290,7 @@ async function startVoiceRecording() {
 
   let sec = 0;
   setVoiceBtn('recording', sec);
+  showToast('🎙️ 話してください（もう一度タップで完了）');
   voiceTimer = setInterval(() => {
     sec++;
     setVoiceBtn('recording', sec);
@@ -299,24 +329,85 @@ async function handleVoiceStop() {
   try {
     const data = await blobToBase64(blob);
     const mimeType = recorderMime.split(';')[0];
-    const transcript = (await callGeminiAPI([
-      { text: 'この音声を日本語で正確に文字起こししてください。金額は算用数字（例: 2400円）で書いてください。文字起こし結果のテキストのみを出力し、説明や前置きは一切不要です。無音や聞き取れない場合は何も出力しないでください。' },
-      { inlineData: { mimeType, data } }
-    ], false)).trim();
+    const partnerMember = members.find(m => m.user_id !== uid);
+    const partnerName = partnerMember?.profiles?.display_name || '相手';
+    const partnerUid = partnerMember?.user_id || uid;
 
-    if (!transcript) {
-      showToast('⚠️ 音声が聞き取れませんでした', true);
-      return;
+    if (voiceDirectMode) {
+      // ワンタップ直接登録モード：音声から直接JSON抽出して即登録！
+      const prompt = `この音声からペアの支出リストを抽出しJSON配列のみ出力せよ。
+ルール:
+- claimAmountは「立て替えた人が相手に請求する金額(整数)」。割り勘・折半や特に指定がない共有支出は支払総額の半分(50%)、相手の分を全額立て替えた場合は100%にする。
+- payerは話し手(私)が払ったなら"me"、相手(${partnerName})が払ったなら"partner"。特に言及がなければ"me"。
+- categoryは["食費","外食","生活","家賃","光熱費","交通","娯楽","旅行","その他"]のいずれか。
+- 音声が聞き取れない・金額が含まれない場合は空配列 [] を出力せよ。
+出力例: [{"title":"カフェ","claimAmount":700,"payer":"me","category":"外食","note":"1400円の割り勘"}]`;
+
+      const resText = await callGeminiAPI([
+        { text: prompt },
+        { inlineData: { mimeType, data } }
+      ], true);
+      const parsed = JSON.parse(resText);
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        showToast('⚠️ 金額や内容が聞き取れませんでした。例：「カフェ1400円割り勘」のように話してください', true);
+        return;
+      }
+
+      const date = getToday();
+      let addedCount = 0;
+      const addedTitles: string[] = [];
+      for (const item of parsed) {
+        const payerId = item.payer === 'partner' ? partnerUid : uid;
+        const amt = Math.round(Number(item.claimAmount) || 0);
+        if (amt <= 0) continue;
+        const title = item.title || '支出';
+        const cat = item.category || 'その他';
+        expenses.unshift({
+          id: 'temp-' + Date.now() + Math.random(),
+          pair_id: pair,
+          title,
+          amount: amt,
+          payer_id: payerId,
+          category: cat,
+          expense_date: date,
+          created_at: new Date().toISOString()
+        });
+        await supabase.rpc('add_shared_expense', {
+          input_pair_id: pair, input_title: title, input_amount: amt, input_payer_id: payerId, input_category: cat, input_expense_date: date, input_memo: null
+        });
+        addedCount++;
+        addedTitles.push(`${title}(${yen(amt)})`);
+      }
+
+      if (addedCount === 0) {
+        showToast('⚠️ 有効な金額が聞き取れませんでした', true);
+        return;
+      }
+
+      showToast(`✅ 音声で追加: ${addedTitles.join('、')}`);
+      await load();
+      render(false);
+    } else {
+      // モーダル内モード：文字起こししてプレビュー表示
+      const transcript = (await callGeminiAPI([
+        { text: 'この音声を日本語で正確に文字起こししてください。金額は算用数字（例: 2400円）で書いてください。文字起こし結果のテキストのみを出力し、説明や前置きは一切不要です。無音や聞き取れない場合は何も出力しないでください。' },
+        { inlineData: { mimeType, data } }
+      ], false)).trim();
+
+      if (!transcript) {
+        showToast('⚠️ 音声が聞き取れませんでした', true);
+        return;
+      }
+      const ta = q('#smartInputText');
+      if (ta) {
+        const cur = ta.value.trim();
+        ta.value = cur ? `${cur}。${transcript}` : transcript;
+      }
+      showToast('🎙️ 文字起こし完了！AIで解析します');
+      q('#btnRunSmartParse')?.click();
     }
-    const ta = q('#smartInputText');
-    if (ta) {
-      const cur = ta.value.trim();
-      ta.value = cur ? `${cur}。${transcript}` : transcript;
-    }
-    showToast('🎙️ 文字起こし完了！AIで解析します');
-    q('#btnRunSmartParse')?.click();
   } catch (err: any) {
-    alert(err?.message || '文字起こしに失敗しました');
+    alert(err?.message || '音声解析に失敗しました');
   } finally {
     isTranscribing = false;
     setVoiceBtn('idle');
@@ -794,11 +885,12 @@ async function render(isInitial = false) {
         </div>
 
         <div class="card" style="margin-top: 0;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 6px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 6px; flex-wrap: wrap;">
             <label class="muted" style="white-space: nowrap;">相手への請求額</label>
-            <div style="display: flex; gap: 6px;">
-              <button id="btnSmartInput" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #f0f4ff; color: #4361ee; border-radius: 12px; font-weight: bold;">🪄 AI文章・音声入力</button>
-              <button id="btnReceipt" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #ffe5e9; color: #a13c52; border-radius: 12px; font-weight: bold;">📷 レシート読込</button>
+            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+              <button id="btnQuickVoice" type="button" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #ffe5e9; color: #e7617d; border-radius: 12px; font-weight: bold; transition: 0.2s;">🎙️ 音声で追加</button>
+              <button id="btnSmartInput" type="button" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #f0f4ff; color: #4361ee; border-radius: 12px; font-weight: bold;">🪄 文章入力</button>
+              <button id="btnReceipt" type="button" class="ghost" style="padding: 6px 10px; font-size: 12px; background: #fff0f3; color: #a13c52; border-radius: 12px; font-weight: bold;">📷 レシート</button>
             </div>
             <input type="file" id="receiptInput" accept="image/*" style="display:none;">
           </div>
@@ -1213,7 +1305,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #b5a6ac; font-weight: bold;">
-          App Version: 21.1.0<br>（AI音声入力 録音＆Gemini文字起こし対応版）
+          App Version: 21.2.0<br>（ワンタップ即録音＆全自動AI登録対応版）
         </div>
       </section>
 
@@ -1697,15 +1789,24 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
     q('#smartInputModal').style.display = 'none';
   });
 
-  // ★ 音声入力ボタン：録音 → Geminiで文字起こし → 自動でAI解析
-  // （Web Speech APIはiPhoneのホーム画面アプリ(PWA)等で動かないため、録音方式に変更）
+  // ★ トップ画面の「🎙️ 音声で追加」ボタン：押した瞬間に録音開始 → もう一度押すと直接AI解析＆自動登録！
+  q('#btnQuickVoice')?.addEventListener('click', async () => {
+    if (isTranscribing) return;
+    if (isListening) {
+      stopVoiceRecording(false);
+      return;
+    }
+    await startVoiceRecording(true);
+  });
+
+  // ★ モーダル内の音声入力ボタン：録音 → Geminiで文字起こし → 自動でAI解析
   q('#btnVoiceInput')?.addEventListener('click', async () => {
     if (isTranscribing) return;
     if (isListening) {
       stopVoiceRecording(false);
       return;
     }
-    await startVoiceRecording();
+    await startVoiceRecording(false);
   });
 
   q('#btnRunSmartParse')?.addEventListener('click', async () => {
