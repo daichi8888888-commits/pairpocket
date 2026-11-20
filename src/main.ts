@@ -486,9 +486,9 @@ async function handleVoiceStop() {
   }
 }
 
-// モーダル表示中・録音中など、再描画すると操作が途切れる状態か
+// モーダル表示中・録音中・10秒タイマー中など、再描画すると操作が途切れる状態か
 function isUiBusy() {
-  if (isListening || isTranscribing) return true;
+  if (isListening || isTranscribing || timerGameState === 'running') return true;
   return ['#editModal', '#receiptModal', '#receiptDetailModal', '#smartInputModal', '#aiReportModal']
     .some(id => q(id)?.style.display === 'flex');
 }
@@ -561,7 +561,14 @@ function getDataSignature() {
 }
 
 let isManualSyncing = false;
-let realtimeChannel: any = null;
+let liveChannel: any = null;
+let dbChannel: any = null;
+let liveStatus: 'idle' | 'connecting' | 'connected' | 'error' = 'idle';
+let liveReconnectTimer: any = null;
+let liveHeartbeatTimer: any = null;
+let partnerLastPingAt = 0;
+let sameAccountOtherDevice = false;
+const clientSessionId = 'c_' + Math.random().toString(36).slice(2, 10) + '_' + Date.now().toString(36);
 
 // 手動更新ボタン処理
 async function manualSync() {
@@ -576,6 +583,11 @@ async function manualSync() {
   try {
     await load();
     await processAutoSubs();
+    if (liveStatus !== 'connected') {
+      setupRealtime(true);
+    } else {
+      sendLivePing();
+    }
     render(false);
     showToast('✅ 最新データに更新しました！');
   } catch {
@@ -589,20 +601,57 @@ async function manualSync() {
   }
 }
 
-// オンライン状態のバッジ表示更新（iPhone画面幅に合わせてコンパクト表示対応）
+// オンライン状態の再判定（Supabase Presence ＋ Broadcast Ping両方で確実に検知）
+function recomputePartnerOnline() {
+  let presencePartner = false;
+  let sameOther = false;
+  try {
+    if (liveChannel && typeof liveChannel.presenceState === 'function') {
+      const state = liveChannel.presenceState() || {};
+      const entries: any[] = [];
+      Object.entries(state).forEach(([key, arr]: [string, any]) => {
+        if (Array.isArray(arr)) {
+          arr.forEach(item => entries.push({ _key: key, ...item }));
+        }
+      });
+      presencePartner = entries.some(e => (e.user_id && e.user_id !== uid) || (e._key && !e._key.startsWith(`${uid}_`) && e._key !== uid));
+      sameOther = entries.some(e => e.user_id === uid && e.client_id && e.client_id !== clientSessionId);
+    }
+  } catch {}
+  const pingFresh = partnerLastPingAt > 0 && (Date.now() - partnerLastPingAt < 15000);
+  partnerOnline = presencePartner || pingFresh;
+  sameAccountOtherDevice = sameOther;
+  updateOnlineBadges();
+}
+
+// オンライン状態のバッジ表示更新（タップで接続確認・再接続対応）
 function updateOnlineBadges() {
   const partnerMember = members.find(m => m.user_id !== uid);
   const pName = partnerMember?.profiles?.display_name || '相手';
   document.querySelectorAll('.partner-online-badge').forEach((el: any) => {
+    el.style.cursor = 'pointer';
+    el.title = 'タップしてオンライン状態を確認・再接続';
     const isCompact = el.dataset.compact === '1';
-    const labelOnline = isCompact ? 'オンライン' : `${esc(pName)}: オンライン`;
-    const labelOffline = isCompact ? 'オフライン' : `${esc(pName)}: オフライン`;
     if (partnerOnline) {
-      el.innerHTML = `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#22c55e; box-shadow:0 0 5px #22c55e; margin-right:4px; flex-shrink:0;"></span>${labelOnline}`;
+      const labelOnline = isCompact ? 'オンライン' : `${esc(pName)}: オンライン`;
+      el.innerHTML = `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#22c55e; box-shadow:0 0 6px #22c55e; margin-right:4px; flex-shrink:0;"></span>${labelOnline}`;
       el.style.background = '#ecfdf5';
       el.style.color = '#15803d';
       el.style.borderColor = '#bbf7d0';
+    } else if (liveStatus === 'connecting') {
+      const labelConn = isCompact ? '接続中…' : 'サーバー接続中…';
+      el.innerHTML = `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#f59e0b; margin-right:4px; flex-shrink:0;"></span>${labelConn}`;
+      el.style.background = '#fffbeb';
+      el.style.color = '#b45309';
+      el.style.borderColor = '#fde68a';
+    } else if (liveStatus === 'error') {
+      const labelErr = isCompact ? '再接続中' : '通信再接続中…';
+      el.innerHTML = `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#ef4444; margin-right:4px; flex-shrink:0;"></span>${labelErr}`;
+      el.style.background = '#fef2f2';
+      el.style.color = '#b91c1c';
+      el.style.borderColor = '#fecaca';
     } else {
+      const labelOffline = isCompact ? 'オフライン' : `${esc(pName)}: オフライン`;
       el.innerHTML = `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#b5a6ac; margin-right:4px; flex-shrink:0;"></span>${labelOffline}`;
       el.style.background = '#F7F4F6';
       el.style.color = '#9A8E94';
@@ -611,23 +660,79 @@ function updateOnlineBadges() {
   });
 }
 
-// ゲームイベントを相手のスマホにリアルタイム送信
-function sendGameEvent(type: string, payload: any = {}) {
-  if (!realtimeChannel) return;
+function sendLivePing() {
+  if (!liveChannel || liveStatus !== 'connected') return;
   try {
-    realtimeChannel.send({
+    liveChannel.send({
       type: 'broadcast',
-      event: 'game_event',
-      payload: { sender: uid, type, ...payload }
+      event: 'presence_ping',
+      payload: { sender: uid, client_id: clientSessionId, ts: Date.now() }
     });
   } catch {}
 }
 
+function sendLiveBye() {
+  if (!liveChannel || liveStatus !== 'connected') return;
+  try {
+    liveChannel.send({
+      type: 'broadcast',
+      event: 'presence_bye',
+      payload: { sender: uid, client_id: clientSessionId }
+    });
+    liveChannel.untrack?.();
+  } catch {}
+}
+
+// ゲームイベントを相手のスマホにリアルタイム送信（切断時は自動再接続＆リトライ）
+async function sendGameEvent(type: string, payload: any = {}) {
+  if (!pair) return;
+  const doSend = async () => {
+    if (!liveChannel) return 'error';
+    try {
+      return await liveChannel.send({
+        type: 'broadcast',
+        event: 'game_event',
+        payload: { sender: uid, client_id: clientSessionId, type, ...payload }
+      });
+    } catch {
+      return 'error';
+    }
+  };
+
+  if (!liveChannel || liveStatus !== 'connected') {
+    await setupRealtime(true);
+    setTimeout(() => { doSend(); }, 600);
+    return;
+  }
+
+  const res = await doSend();
+  if (res !== 'ok') {
+    await setupRealtime(true);
+    setTimeout(() => { doSend(); }, 700);
+  }
+}
+
 // 相手からのリアルタイムゲーム通信を受信
 function handleRemoteGameEvent(msg: any) {
-  if (!msg || msg.sender === uid) return;
+  if (!msg) return;
+  if (msg.client_id && msg.client_id === clientSessionId) return;
+  if (!msg.client_id && msg.sender === uid) return;
+
+  // 相手からのゲーム通信が届いた＝相手は確実にオンライン！
+  if (msg.sender && msg.sender !== uid) {
+    partnerLastPingAt = Date.now();
+    if (!partnerOnline) {
+      partnerOnline = true;
+      updateOnlineBadges();
+    }
+  }
+
   const myName = members.find(m => m.user_id === uid)?.profiles?.display_name || '自分';
   const partnerName = members.find(m => m.user_id !== uid)?.profiles?.display_name || '相手';
+
+  if (currentTab !== 'minigame') {
+    showToast(`🎮 ${partnerName}がオンライン対戦を始めました！（☰メニュー→オンライン対戦）`);
+  }
 
   switch (msg.type) {
     case 'switch_mode':
@@ -747,41 +852,139 @@ function handleRemoteGameEvent(msg: any) {
   }
 }
 
-// Supabase Realtime 購読（即時データ同期 ＋ オンラインPresence ＋ ミニゲーム通信対戦）
-function setupRealtime() {
-  if (!pair) return;
-  if (realtimeChannel) {
-    try { supabase.removeChannel(realtimeChannel); } catch {}
+// Supabase Realtime 購読（オンラインPresence＆ミニゲーム通信は専用チャネルに完全分離し、iPhone復帰時の自動再接続に対応）
+async function setupRealtime(forceReconnect = false) {
+  if (!pair || !uid) return;
+  if (!forceReconnect && liveChannel && liveStatus === 'connected') return;
+
+  if (liveReconnectTimer) {
+    clearTimeout(liveReconnectTimer);
+    liveReconnectTimer = null;
   }
-  realtimeChannel = supabase
-    .channel(`pair_room_${pair}`, {
-      config: { presence: { key: uid } }
+
+  // Publishable Key利用時もログインJWTでRealtime認証を通す
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      supabase.realtime.setAuth(session.access_token);
+    }
+  } catch {}
+
+  if (liveChannel) {
+    try { await supabase.removeChannel(liveChannel); } catch {}
+    liveChannel = null;
+  }
+
+  liveStatus = 'connecting';
+  updateOnlineBadges();
+
+  // ① 専用ライブチャネル（Presence + Broadcast のみ：DBのRealtime設定に依存せず確実に動く！）
+  const channel = supabase
+    .channel(`pair_live_${pair}`, {
+      config: {
+        broadcast: { self: false, ack: false },
+        presence: { key: `${uid}_${clientSessionId}` }
+      }
     })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses', filter: `pair_id=eq.${pair}` }, () => {
-      backgroundSync(true);
+    .on('presence', { event: 'sync' }, () => recomputePartnerOnline())
+    .on('presence', { event: 'join' }, () => recomputePartnerOnline())
+    .on('presence', { event: 'leave' }, () => recomputePartnerOnline())
+    .on('broadcast', { event: 'presence_ping' }, (payload: any) => {
+      const msg = payload?.payload;
+      if (!msg || msg.client_id === clientSessionId) return;
+      if (msg.sender && msg.sender !== uid) {
+        partnerLastPingAt = Date.now();
+        recomputePartnerOnline();
+        try {
+          channel.send({
+            type: 'broadcast',
+            event: 'presence_pong',
+            payload: { sender: uid, client_id: clientSessionId, ts: Date.now() }
+          });
+        } catch {}
+      } else if (msg.sender === uid) {
+        sameAccountOtherDevice = true;
+      }
     })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'settlements', filter: `pair_id=eq.${pair}` }, () => {
-      backgroundSync(true);
+    .on('broadcast', { event: 'presence_pong' }, (payload: any) => {
+      const msg = payload?.payload;
+      if (!msg || msg.client_id === clientSessionId) return;
+      if (msg.sender && msg.sender !== uid) {
+        partnerLastPingAt = Date.now();
+        recomputePartnerOnline();
+      }
     })
-    .on('presence', { event: 'sync' }, () => {
-      const state = realtimeChannel.presenceState();
-      const onlineUids = Object.keys(state);
-      partnerOnline = onlineUids.some(k => k !== uid);
-      updateOnlineBadges();
+    .on('broadcast', { event: 'presence_bye' }, (payload: any) => {
+      const msg = payload?.payload;
+      if (!msg || msg.client_id === clientSessionId) return;
+      if (msg.sender && msg.sender !== uid) {
+        partnerLastPingAt = 0;
+        recomputePartnerOnline();
+      }
     })
     .on('broadcast', { event: 'game_event' }, (payload: any) => {
       handleRemoteGameEvent(payload?.payload);
     })
     .subscribe(async (status: string) => {
+      if (liveChannel !== channel) return;
       if (status === 'SUBSCRIBED') {
+        liveStatus = 'connected';
         try {
-          await realtimeChannel.track({ user_id: uid, online_at: new Date().toISOString() });
+          await channel.track({
+            user_id: uid,
+            client_id: clientSessionId,
+            online_at: new Date().toISOString()
+          });
         } catch {}
+        sendLivePing();
+        recomputePartnerOnline();
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        liveStatus = 'error';
+        recomputePartnerOnline();
+        if (document.visibilityState === 'visible' && !liveReconnectTimer) {
+          liveReconnectTimer = setTimeout(() => {
+            liveReconnectTimer = null;
+            if (document.visibilityState === 'visible' && pair) setupRealtime(true);
+          }, 3000);
+        }
       }
     });
+
+  liveChannel = channel;
+
+  // ハートビート監視（5秒ごとにping送信＆15秒応答なしでオフライン判定＆切断時の自動復旧）
+  if (!liveHeartbeatTimer) {
+    liveHeartbeatTimer = setInterval(() => {
+      if (!pair || !uid) return;
+      if (document.visibilityState !== 'visible') return;
+      if (liveStatus === 'connected') {
+        sendLivePing();
+        recomputePartnerOnline();
+      } else if (liveStatus !== 'connecting' && navigator.onLine !== false) {
+        setupRealtime(true);
+      }
+    }, 5000);
+  }
+
+  // ② DB変更購読は別チャネルに分離（テーブル側でRealtimeが無効でもオンライン機能を道連れにしない）
+  if (!dbChannel) {
+    try {
+      dbChannel = supabase
+        .channel(`pair_db_${pair}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses', filter: `pair_id=eq.${pair}` }, () => {
+          backgroundSync(true);
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'settlements', filter: `pair_id=eq.${pair}` }, () => {
+          backgroundSync(true);
+        })
+        .subscribe();
+    } catch {}
+  }
 }
 
 let pendingSyncRender = false;
+let hasBooted = false;
+let isBooting = false;
 
 // リアルタイム＆バックグラウンド同期機能（追加・編集・削除・名前変更すべて検知）
 async function backgroundSync(forceCheck = false) {
@@ -814,10 +1017,18 @@ async function backgroundSync(forceCheck = false) {
 
 setInterval(() => backgroundSync(false), 5000);
 document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'visible' && pair) {
+  if (!pair) return;
+  if (document.visibilityState === 'visible') {
+    // iPhone SafariはバックグラウンドでWebSocketを切断するため復帰時に必ず再接続＆ping
+    await setupRealtime(true);
     await backgroundSync(true);
+  } else {
+    sendLiveBye();
   }
 });
+window.addEventListener('pagehide', () => { sendLiveBye(); });
+window.addEventListener('pageshow', () => { if (pair) setupRealtime(true); });
+window.addEventListener('online', () => { if (pair) setupRealtime(true); });
 
 // 爆速起動コア
 const initCache = () => {
@@ -836,19 +1047,32 @@ const initCache = () => {
 initCache();
 
 async function boot() {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) return authView();
-  uid = session.user.id;
+  if (isBooting) return;
+  isBooting = true;
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      hasBooted = false;
+      return authView();
+    }
+    uid = session.user.id;
+    if (session.access_token) {
+      try { supabase.realtime.setAuth(session.access_token); } catch {}
+    }
 
-  const { data, error } = await supabase.from('pair_members').select('pair_id').eq('user_id', uid).maybeSingle();
-  if (error) return fail(error.message);
-  if (!data) return pairView();
-  
-  pair = data.pair_id;
-  await load();
-  await processAutoSubs();
-  setupRealtime();
-  render(false); 
+    const { data, error } = await supabase.from('pair_members').select('pair_id').eq('user_id', uid).maybeSingle();
+    if (error) return fail(error.message);
+    if (!data) return pairView();
+    
+    pair = data.pair_id;
+    hasBooted = true;
+    await load();
+    await processAutoSubs();
+    setupRealtime(true);
+    render(false);
+  } finally {
+    isBooting = false;
+  }
 }
 
 function authView(msg = '') {
@@ -1799,7 +2023,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full">ログアウト</button>
 
         <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #9A8E94; font-weight: 600;">
-          App Version: 1.24.1<br>（公式アプリ風UI＆ホーム画面アイコン刷新版）
+          App Version: 1.24.2<br>（オンライン同時接続・iPhone自動再接続 安定化版）
         </div>
       </section>
 
@@ -2193,7 +2417,7 @@ ${partnerName}の回答: 「${syncPartnerAns}」
 // ==========================================
 function startTimerChallengeLocal() {
   if (timerAnimId) cancelAnimationFrame(timerAnimId);
-  timerState = 'running';
+  timerGameState = 'running';
   timerStartAt = performance.now();
   timerMyTime = null;
   timerPartnerTime = null;
@@ -2203,7 +2427,7 @@ function startTimerChallengeLocal() {
   renderTimerChallenge(myName, partnerName);
 
   const tick = () => {
-    if (timerState !== 'running') return;
+    if (timerGameState !== 'running') return;
     const elapsed = (performance.now() - timerStartAt) / 1000;
     const disp = q('#timerClockDisplay');
     if (disp) {
@@ -2218,7 +2442,7 @@ function startTimerChallengeLocal() {
     if (elapsed < 25 && (timerMyTime === null || timerPartnerTime === null)) {
       timerAnimId = requestAnimationFrame(tick);
     } else if (timerMyTime !== null && timerPartnerTime !== null) {
-      timerState = 'done';
+      timerGameState = 'done';
       renderTimerChallenge(myName, partnerName);
     }
   };
@@ -2230,7 +2454,7 @@ function renderTimerChallenge(myName: string, partnerName: string) {
   if (!area) return;
 
   const bothDone = timerMyTime !== null && timerPartnerTime !== null;
-  if (bothDone) timerState = 'done';
+  if (bothDone) timerGameState = 'done';
 
   let resultHtml = '';
   if (timerMyTime !== null || timerPartnerTime !== null) {
@@ -2270,11 +2494,11 @@ function renderTimerChallenge(myName: string, partnerName: string) {
 
     <div style="background:#fffafb; border:2px solid #f0dfe4; border-radius:16px; padding:24px 12px; margin-bottom:14px;">
       <div id="timerClockDisplay" style="font-size:38px; font-weight:900; color:#3e3438; font-variant-numeric:tabular-nums;">
-        ${timerState === 'idle' ? '0.00 秒' : (bothDone ? '10.00秒 判定完了！' : '??.?? 秒')}
+        ${timerGameState === 'idle' ? '0.00 秒' : (bothDone ? '10.00秒 判定完了！' : '??.?? 秒')}
       </div>
     </div>
 
-    ${timerState === 'running' ? `
+    ${timerGameState === 'running' ? `
       <div style="display:flex; flex-direction:column; gap:8px;">
         <button id="btnStopMyTimer" class="primary full" style="padding:18px; font-size:18px;" ${timerMyTime !== null ? 'disabled' : ''}>
           ${timerMyTime !== null ? '🔒 あなたのタイム確定済み' : `🛑 ストップ！（${esc(myName)}）`}
@@ -2296,14 +2520,14 @@ function renderTimerChallenge(myName: string, partnerName: string) {
   });
 
   q('#btnStopMyTimer')?.addEventListener('click', () => {
-    if (timerState !== 'running' || timerMyTime !== null) return;
+    if (timerGameState !== 'running' || timerMyTime !== null) return;
     timerMyTime = Number(((performance.now() - timerStartAt) / 1000).toFixed(2));
     sendGameEvent('timer_stop', { time: timerMyTime });
     renderTimerChallenge(myName, partnerName);
   });
 
   q('#btnStopPartnerLocalTimer')?.addEventListener('click', () => {
-    if (timerState !== 'running' || timerPartnerTime !== null) return;
+    if (timerGameState !== 'running' || timerPartnerTime !== null) return;
     timerPartnerTime = Number(((performance.now() - timerStartAt) / 1000).toFixed(2));
     renderTimerChallenge(myName, partnerName);
   });
@@ -2713,6 +2937,24 @@ function showCalc() {
 function wire(state: any, myName: string, partnerName: string, partnerUid: string, filteredExpenses: any[], nameFn: (id: string) => string) {
   document.querySelectorAll('.manual-sync-btn').forEach((b: any) => {
     b.onclick = () => manualSync();
+  });
+  document.querySelectorAll('.partner-online-badge').forEach((el: any) => {
+    el.onclick = async () => {
+      if (liveStatus !== 'connected') {
+        showToast('🔄 オンラインサーバーへ再接続中…');
+        await setupRealtime(true);
+        return;
+      }
+      sendLivePing();
+      recomputePartnerOnline();
+      if (partnerOnline) {
+        showToast(`🟢 ${partnerName}とリアルタイム接続中！そのまま対戦できます`);
+      } else if (sameAccountOtherDevice) {
+        showToast('ℹ️ 別端末も同じアカウントでログイン中です（別アカウント同士でオンラインになります）');
+      } else {
+        showToast(`🟡 通信サーバー接続OK！${partnerName}がアプリを開くと緑に変わります`);
+      }
+    };
   });
   q('#menuBtn')?.addEventListener('click', () => q('#menuDrawer').classList.remove('hide'));
   q('#closeDrawerBtn')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
@@ -3788,12 +4030,35 @@ function save() {
   });
 }
 
-async function logout() { await supabase.auth.signOut(); boot(); }
+async function logout() {
+  sendLiveBye();
+  localStorage.removeItem('pp_cache');
+  hasBooted = false;
+  uid = '';
+  pair = '';
+  partnerOnline = false;
+  liveStatus = 'idle';
+  await supabase.auth.signOut();
+  boot();
+}
 function q(s: string) { return document.querySelector(s) as any; }
 function val(s: string) { return q(s)?.value || ''; }
 function fail(s: string) { app.innerHTML = `<main class="app"><div class="notice">${esc(s)}</div></main>`; }
 
 supabase.auth.onAuthStateChange((event, session) => {
-  if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') { if (session && !uid) boot(); } 
-  else if (event === 'SIGNED_OUT') { uid = ''; pair = ''; authView(); }
+  if (session?.access_token) {
+    try { supabase.realtime.setAuth(session.access_token); } catch {}
+  }
+  if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
+    if (session && !hasBooted) boot();
+    else if (session && pair && liveStatus !== 'connected') setupRealtime(true);
+  } else if (event === 'SIGNED_OUT') {
+    sendLiveBye();
+    hasBooted = false;
+    uid = ''; pair = ''; partnerOnline = false; liveStatus = 'idle';
+    authView();
+  }
 });
+
+// キャッシュ起動時でも必ず Realtime 接続と最新同期を走らせる
+boot();
