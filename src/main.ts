@@ -30,9 +30,15 @@ let recipeImageBase64 = '';
 let recipeMood = '時短・簡単';
 let lastRecipeHtml = '';
 
-// ミニゲーム用の状態（1台で2人遊べる7種ミニゲーム対応）
+// ミニゲーム用の状態（2台リアルタイム同期＆1台対戦両対応・7種ゲーム）
 type MiniGameMode = 'sync' | 'timer' | 'balloon' | 'ttt' | 'react' | 'bomb' | 'quiz';
 let miniGameMode: MiniGameMode = 'sync';
+let liveDbAvailable = false;
+let partnerOnline = false;
+let lastGameVer = 0;
+let lastTimerRoundId = 0;
+let lastQuizId = 0;
+let syncJudging = false;
 
 // 💞 2. 以心伝心チャレンジ
 let syncTopic = 'ふたりで次に行きたい旅行先は？';
@@ -560,6 +566,229 @@ function getDataSignature() {
 }
 
 let isManualSyncing = false;
+let livePollTimer: any = null;
+let isLivePolling = false;
+let liveMissingLogged = false;
+
+// オンライン状態バッジの更新（テーブル未作成時は自動非表示・接続中ループなし）
+function updateOnlineBadges() {
+  const partnerMember = members.find(m => m.user_id !== uid);
+  const pName = partnerMember?.profiles?.display_name || '相手';
+  document.querySelectorAll('.partner-online-badge').forEach((el: any) => {
+    if (!liveDbAvailable) {
+      el.style.display = 'none';
+      return;
+    }
+    el.style.display = 'inline-flex';
+    const isCompact = el.dataset.compact === '1';
+    if (partnerOnline) {
+      const label = isCompact ? 'オンライン' : `${esc(pName)}: オンライン`;
+      el.innerHTML = `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#22c55e; box-shadow:0 0 6px #22c55e; margin-right:4px; flex-shrink:0;"></span>${label}`;
+      el.style.background = '#ecfdf5';
+      el.style.color = '#15803d';
+      el.style.borderColor = '#bbf7d0';
+    } else {
+      const label = isCompact ? 'オフライン' : `${esc(pName)}: オフライン`;
+      el.innerHTML = `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#b5a6ac; margin-right:4px; flex-shrink:0;"></span>${label}`;
+      el.style.background = '#F7F4F6';
+      el.style.color = '#988D93';
+      el.style.borderColor = '#EDE8EB';
+    }
+  });
+}
+
+// サーバーから取得したオンライン＆最新ゲーム状態を反映
+function applyLivePayload(data: any, isFromPoll = true) {
+  if (!data || typeof data !== 'object') return;
+  const serverNow = Number(data.server_now_ms) || Date.now();
+  const pres = data.presence || {};
+  let isPartnerHere = false;
+  Object.entries(pres).forEach(([k, ts]: [string, any]) => {
+    if (k !== uid && Number(ts) > 0 && serverNow - Number(ts) < 13000) {
+      isPartnerHere = true;
+    }
+  });
+  partnerOnline = isPartnerHere;
+  updateOnlineBadges();
+
+  const ver = Number(data.game_ver) || 0;
+  const gs = data.game_state;
+  if (!gs || typeof gs !== 'object' || ver <= lastGameVer) return;
+
+  const isFirstLoad = lastGameVer === 0;
+  lastGameVer = ver;
+
+  // 初回ロード時は古いゲーム更新トーストを出さない
+  const fromPartner = gs.updated_by && gs.updated_by !== uid;
+  const myName = members.find(m => m.user_id === uid)?.profiles?.display_name || '自分';
+  const partnerName = members.find(m => m.user_id !== uid)?.profiles?.display_name || '相手';
+  const partnerUid = members.find(m => m.user_id !== uid)?.user_id || '';
+
+  if (gs.mode && ['sync', 'timer', 'balloon', 'ttt', 'quiz', 'bomb', 'react'].includes(gs.mode)) {
+    miniGameMode = gs.mode;
+  }
+
+  // 💞 以心伝心
+  if (typeof gs.sync_topic === 'string' && gs.sync_topic) {
+    syncTopic = gs.sync_topic;
+  }
+  if (gs.sync_answers && typeof gs.sync_answers === 'object') {
+    const myRemote = gs.sync_answers[uid];
+    const pRemote = partnerUid ? gs.sync_answers[partnerUid] : Object.entries(gs.sync_answers).find(([k]) => k !== uid)?.[1];
+    syncMyAns = typeof myRemote === 'string' ? myRemote : '';
+    syncPartnerAns = typeof pRemote === 'string' ? pRemote : '';
+  }
+  if (typeof gs.sync_result_html === 'string') {
+    syncResultHtml = gs.sync_result_html;
+  }
+  if (typeof gs.sync_revealed === 'boolean') {
+    syncRevealed = gs.sync_revealed;
+  }
+  if (typeof gs.sync_score === 'number') {
+    syncScore = gs.sync_score;
+  }
+
+  // ⏱️ 10.00秒ピタリ止め
+  const remoteRoundId = Number(gs.timer_round_id) || 0;
+  if (remoteRoundId > 0 && remoteRoundId !== lastTimerRoundId) {
+    lastTimerRoundId = remoteRoundId;
+    if (!isFirstLoad && fromPartner) {
+      startTimerChallengeLocal(false);
+      showToast('⏱️ 相手が10秒チャレンジをスタートしました！');
+    }
+  }
+  if (gs.timer_stops && typeof gs.timer_stops === 'object') {
+    const myStop = gs.timer_stops[uid];
+    const pStop = partnerUid ? gs.timer_stops[partnerUid] : Object.entries(gs.timer_stops).find(([k]) => k !== uid)?.[1];
+    if (typeof myStop === 'number') timerMyTime = myStop;
+    if (typeof pStop === 'number') timerPartnerTime = pStop;
+    if (Object.keys(gs.timer_stops).length === 0 && fromPartner) {
+      timerMyTime = null;
+      timerPartnerTime = null;
+    }
+  }
+
+  // 🎈 風船チキンレース
+  if (gs.balloon && typeof gs.balloon === 'object') {
+    balloonCount = Number(gs.balloon.count) || 0;
+    balloonLimit = Number(gs.balloon.limit) || 22;
+    balloonTurnUid = gs.balloon.turnUid || uid;
+    balloonBoom = !!gs.balloon.boom;
+    balloonLoserUid = gs.balloon.loserUid || '';
+  }
+
+  // ⭕ 消えるマルバツ
+  if (gs.ttt && typeof gs.ttt === 'object') {
+    tttMoves = Array.isArray(gs.ttt.moves) ? gs.ttt.moves : [];
+    tttTurnUid = gs.ttt.turnUid || uid;
+    tttWinnerUid = gs.ttt.winnerUid || '';
+  }
+
+  // 💣 爆弾
+  if (gs.bomb && Array.isArray(gs.bomb.tiles)) {
+    bombTiles = gs.bomb.tiles;
+    if (q('#bombMsg')) {
+      if (gs.bomb.boom) {
+        q('#bombMsg').innerHTML = gs.bomb.actorUid === uid
+          ? '💥 <b style="color:#C43E57;">ドカン！あなたの負け！</b>'
+          : `💥 <b style="color:#1F6E50;">${esc(partnerName)}が爆発！あなたの勝ち！🎉</b>`;
+      } else if (gs.bomb.actorUid) {
+        q('#bombMsg').textContent = gs.bomb.actorUid === uid ? 'セーフ！相手の番です' : `${partnerName}はセーフ！あなたの番です`;
+      } else {
+        q('#bombMsg').textContent = '交互にタップ！ハズレ(💣)で負け';
+      }
+    }
+  }
+
+  // 🤖 AIクイズ
+  const remoteQuizId = Number(gs.quiz_id) || 0;
+  if (remoteQuizId > 0 && gs.quiz) {
+    const isNewQuiz = remoteQuizId !== lastQuizId;
+    lastQuizId = remoteQuizId;
+    currentQuiz = gs.quiz;
+    const picks = gs.quiz_picks || {};
+    const myPick = picks[uid];
+    const pPick = partnerUid ? picks[partnerUid] : Object.entries(picks).find(([k]) => k !== uid)?.[1];
+    quizPickP1 = typeof myPick === 'number' ? myPick : null;
+    quizPickP2 = typeof pPick === 'number' ? pPick : null;
+    if (isNewQuiz) {
+      quizRevealed = false;
+    }
+    if (quizPickP1 !== null && quizPickP2 !== null && !quizRevealed) {
+      if (currentTab === 'minigame') {
+        renderQuizArea(myName, partnerName, true);
+      }
+    }
+  }
+
+  // 画面更新（入力フォーカス中はカーソル飛びを避ける）
+  const activeId = document.activeElement?.id || '';
+  const typingInGame = ['syncMyAnsInput', 'syncPartnerLocalInput', 'syncTopicInput', 'quizThemeInput'].includes(activeId);
+  if (currentTab === 'minigame' && !typingInGame) {
+    renderMiniGameTabs();
+  }
+
+  // 💞 両者の回答が揃った瞬間、自動でAI採点（重複実行防止つき）
+  if (miniGameMode === 'sync' && syncMyAns && syncPartnerAns && !syncRevealed && !syncJudging && !isFirstLoad) {
+    evaluateSyncGame(myName, partnerName, true);
+  }
+
+  if (isFromPoll && !isFirstLoad && fromPartner && currentTab !== 'minigame') {
+    showToast(`🎮 ${partnerName}がミニゲームを操作しました（☰メニュー→ミニゲーム）`);
+  }
+}
+
+// DBベースの超安定リアルタイム通信（HTTPS RPCのみ使用・WebSocket切断バグゼロ）
+async function pollLiveState(online = true) {
+  if (!pair || !uid || isLivePolling) return;
+  isLivePolling = true;
+  try {
+    const { data, error } = await supabase.rpc('ping_pair_live', {
+      input_pair_id: pair,
+      input_online: online
+    });
+    if (error) {
+      liveDbAvailable = false;
+      liveMissingLogged = true;
+      updateOnlineBadges();
+      return;
+    }
+    liveDbAvailable = true;
+    liveMissingLogged = false;
+    if (online) applyLivePayload(data, true);
+  } catch {
+  } finally {
+    isLivePolling = false;
+  }
+}
+
+async function pushGamePatch(patch: any, mapKey?: string, mapVal?: any) {
+  if (!pair || !uid || !liveDbAvailable) return;
+  try {
+    const { data, error } = await supabase.rpc('update_pair_game', {
+      input_pair_id: pair,
+      input_patch: { ...patch, updated_by: uid, updated_at: Date.now() },
+      input_map_key: mapKey ?? null,
+      input_map_val: mapVal !== undefined ? mapVal : null
+    });
+    if (!error && data) {
+      applyLivePayload(data, false);
+    }
+  } catch {}
+}
+
+function scheduleLivePolling() {
+  if (livePollTimer) {
+    clearInterval(livePollTimer);
+    livePollTimer = null;
+  }
+  const intervalMs = liveMissingLogged ? 30000 : (currentTab === 'minigame' ? 800 : 4000);
+  livePollTimer = setInterval(() => {
+    if (pair && uid && document.visibilityState === 'visible') {
+      pollLiveState(true);
+    }
+  }, intervalMs);
+}
 
 // 手動更新ボタン処理
 async function manualSync() {
@@ -574,6 +803,7 @@ async function manualSync() {
   try {
     await load();
     await processAutoSubs();
+    pollLiveState(true);
     render(false);
     showToast('最新データに更新しました');
   } catch {
@@ -621,9 +851,17 @@ async function backgroundSync(forceCheck = false) {
 
 setInterval(() => backgroundSync(false), 5000);
 document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'visible' && pair) {
+  if (!pair) return;
+  if (document.visibilityState === 'visible') {
+    pollLiveState(true);
+    scheduleLivePolling();
     await backgroundSync(true);
+  } else {
+    pollLiveState(false);
   }
+});
+window.addEventListener('pagehide', () => {
+  if (pair && liveDbAvailable) pollLiveState(false);
 });
 
 // 爆速起動コア
@@ -662,6 +900,8 @@ async function boot() {
     await load();
     await processAutoSubs();
     render(false);
+    await pollLiveState(true);
+    scheduleLivePolling();
   } finally {
     isBooting = false;
   }
@@ -766,6 +1006,10 @@ function setTab(tab: string) {
       }
     }
   });
+  if (pair && uid) {
+    scheduleLivePolling();
+    if (tab === 'minigame') pollLiveState(true);
+  }
 }
 
 async function render(isInitial = false) {
@@ -996,7 +1240,10 @@ async function render(isInitial = false) {
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
           </div>
           <div style="min-width: 0; flex: 1; overflow: hidden;">
-            <div class="brand">PairPocket</div>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <div class="brand">PairPocket</div>
+              <span class="partner-online-badge" data-compact="1" style="display:none; font-size:10px; font-weight:700; padding:1px 6px; border-radius:999px; border:1px solid #EDE8EB; background:#F7F4F6; color:#988D93; align-items:center; white-space:nowrap; flex-shrink:0;"></span>
+            </div>
             <div class="muted" style="font-size:11px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.2; margin-top:1px;">${esc(pairName)}</div>
           </div>
         </div>
@@ -1275,10 +1522,11 @@ async function render(isInitial = false) {
         ` : ''}
       </section>
 
-      <!-- サブ機能③：🎮 ふたりでミニゲーム（1台で遊べる7種パーティーゲーム） -->
+      <!-- サブ機能③：🎮 ふたりでミニゲーム（2台リアルタイム同期＆1台対戦両対応） -->
       <section id="sec-minigame" style="display: none;">
         <div class="section-head">
           <h2 class="section-title">🎮 ふたりでミニゲーム</h2>
+          <span class="partner-online-badge" style="display:none; font-size:11px; font-weight:700; padding:4px 10px; border-radius:999px; border:1px solid #EDE8EB; background:#F7F4F6; color:#988D93; align-items:center; white-space:nowrap; flex-shrink:0;"></span>
         </div>
         
         <div style="display: flex; gap: 6px; margin-bottom: 12px; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch;">
@@ -1657,7 +1905,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full" style="background:#fff; color:#665C62; margin-top: 6px; padding: 13px;">ログアウト</button>
 
         <div style="text-align: center; margin-top: 24px; font-size: 11px; color: #988D93; font-weight: 600;">
-          PairPocket v1.25.0
+          PairPocket v1.26.0
         </div>
       </section>
 
@@ -1780,6 +2028,7 @@ async function render(isInitial = false) {
   wire(stateObj, myName, partnerName, partnerMember?.user_id || uid, filteredExpenses, name);
   setTab(currentTab); 
   showCalc();
+  updateOnlineBadges();
   renderMiniGameTabs();
 
   if (isInitial && currentTab === 'entry') {
@@ -1950,7 +2199,9 @@ function renderSyncGame(myName: string, partnerName: string) {
       syncPartnerAns = '';
       syncResultHtml = '';
       syncRevealed = false;
+      syncJudging = false;
       renderSyncGame(myName, partnerName);
+      pushGamePatch({ mode: 'sync', sync_topic: syncTopic, sync_answers: {}, sync_result_html: '', sync_revealed: false, sync_score: 0 });
     };
   });
 
@@ -1962,7 +2213,9 @@ function renderSyncGame(myName: string, partnerName: string) {
     syncPartnerAns = '';
     syncResultHtml = '';
     syncRevealed = false;
+    syncJudging = false;
     renderSyncGame(myName, partnerName);
+    pushGamePatch({ mode: 'sync', sync_topic: syncTopic, sync_answers: {}, sync_result_html: '', sync_revealed: false, sync_score: 0 });
   });
 
   q('#btnLockSyncAns')?.addEventListener('click', () => {
@@ -1970,8 +2223,9 @@ function renderSyncGame(myName: string, partnerName: string) {
     if (!a) return showToast('回答を入力してください', true);
     syncMyAns = a;
     renderSyncGame(myName, partnerName);
+    pushGamePatch({ mode: 'sync', sync_topic: syncTopic }, 'sync_answers', a);
     if (syncMyAns && syncPartnerAns && !syncRevealed) {
-      evaluateSyncGame(myName, partnerName);
+      evaluateSyncGame(myName, partnerName, true);
     } else {
       showToast('回答をロックしました');
     }
@@ -1983,18 +2237,20 @@ function renderSyncGame(myName: string, partnerName: string) {
     syncPartnerAns = a;
     renderSyncGame(myName, partnerName);
     if (syncMyAns && syncPartnerAns && !syncRevealed) {
-      evaluateSyncGame(myName, partnerName);
+      evaluateSyncGame(myName, partnerName, true);
     } else {
       showToast('回答をロックしました');
     }
   });
 
   q('#btnRunSyncJudge')?.addEventListener('click', () => {
-    evaluateSyncGame(myName, partnerName);
+    evaluateSyncGame(myName, partnerName, true);
   });
 }
 
-async function evaluateSyncGame(myName: string, partnerName: string) {
+async function evaluateSyncGame(myName: string, partnerName: string, syncToRemote = true) {
+  if (syncJudging) return;
+  syncJudging = true;
   syncRevealed = true;
   syncResultHtml = `<div style="padding:12px; color:#665C62; font-weight:700;">AIがふたりのシンクロ率を判定中…</div>`;
   renderSyncGame(myName, partnerName);
@@ -2032,20 +2288,30 @@ ${partnerName}の回答: 「${syncPartnerAns}」
       <div style="font-size:30px; font-weight:800; color:#E2556F;">${syncScore}%</div>
       <div style="font-size:13px; margin-top:6px;">${esc(myName)}: 「${esc(syncMyAns)}」 / ${esc(partnerName)}: 「${esc(syncPartnerAns)}」</div>
     `;
+  } finally {
+    syncJudging = false;
   }
 
   renderSyncGame(myName, partnerName);
+  if (syncToRemote) {
+    pushGamePatch({ mode: 'sync', sync_result_html: syncResultHtml, sync_revealed: true, sync_score: syncScore });
+  }
 }
 
 // ==========================================
 // ゲーム②：⏱️ 体内時計 10.00秒ピタリ止めバトル
 // ==========================================
-function startTimerChallengeLocal() {
+function startTimerChallengeLocal(syncToRemote = true) {
   if (timerAnimId) cancelAnimationFrame(timerAnimId);
   timerGameState = 'running';
   timerStartAt = performance.now();
   timerMyTime = null;
   timerPartnerTime = null;
+
+  if (syncToRemote) {
+    lastTimerRoundId = Date.now();
+    pushGamePatch({ mode: 'timer', timer_round_id: lastTimerRoundId, timer_stops: {} });
+  }
 
   const myName = members.find(m => m.user_id === uid)?.profiles?.display_name || '自分';
   const partnerName = members.find(m => m.user_id !== uid)?.profiles?.display_name || '相手';
@@ -2140,13 +2406,14 @@ function renderTimerChallenge(myName: string, partnerName: string) {
   `;
 
   q('#btnStartTimerGame')?.addEventListener('click', () => {
-    startTimerChallengeLocal();
+    startTimerChallengeLocal(true);
   });
 
   q('#btnStopMyTimer')?.addEventListener('click', () => {
     if (timerGameState !== 'running' || timerMyTime !== null) return;
     timerMyTime = Number(((performance.now() - timerStartAt) / 1000).toFixed(2));
     renderTimerChallenge(myName, partnerName);
+    pushGamePatch({ mode: 'timer' }, 'timer_stops', timerMyTime);
   });
 
   q('#btnStopPartnerLocalTimer')?.addEventListener('click', () => {
@@ -2216,6 +2483,10 @@ function renderBalloonGame(myName: string, partnerName: string) {
         balloonTurnUid = actorUid === uid ? partnerUid : uid;
       }
       renderBalloonGame(myName, partnerName);
+      pushGamePatch({
+        mode: 'balloon',
+        balloon: { count: balloonCount, limit: balloonLimit, turnUid: balloonTurnUid, boom: balloonBoom, loserUid: balloonLoserUid }
+      });
     };
   });
 
@@ -2226,6 +2497,10 @@ function renderBalloonGame(myName: string, partnerName: string) {
     balloonLoserUid = '';
     balloonTurnUid = uid;
     renderBalloonGame(myName, partnerName);
+    pushGamePatch({
+      mode: 'balloon',
+      balloon: { count: 0, limit: balloonLimit, turnUid: balloonTurnUid, boom: false, loserUid: '' }
+    });
   });
 }
 
@@ -2310,6 +2585,10 @@ function renderTttGame(myName: string, partnerName: string) {
         tttTurnUid = moverUid === uid ? partnerUid : uid;
       }
       renderTttGame(myName, partnerName);
+      pushGamePatch({
+        mode: 'ttt',
+        ttt: { moves: tttMoves, turnUid: tttTurnUid, winnerUid: tttWinnerUid }
+      });
     };
   });
 
@@ -2318,13 +2597,20 @@ function renderTttGame(myName: string, partnerName: string) {
     tttWinnerUid = '';
     tttTurnUid = uid;
     renderTttGame(myName, partnerName);
+    pushGamePatch({
+      mode: 'ttt',
+      ttt: { moves: [], turnUid: tttTurnUid, winnerUid: '' }
+    });
   });
 }
 
-function initBombGame(_broadcast = false) {
+function initBombGame(syncToRemote = false) {
   const bombIndex = Math.floor(Math.random() * 9);
   bombTiles = Array(9).fill(null).map((_, i) => ({ hasBomb: i === bombIndex, opened: false }));
   renderBombGame();
+  if (syncToRemote) {
+    pushGamePatch({ mode: 'bomb', bomb: { tiles: bombTiles, actorUid: '', boom: false } });
+  }
 }
 
 function renderBombGame() {
@@ -2341,13 +2627,15 @@ function renderBombGame() {
       const idx = Number(b.dataset.idx);
       if (bombTiles[idx].opened) return;
       bombTiles[idx].opened = true;
-      if (bombTiles[idx].hasBomb) {
+      const isBoom = bombTiles[idx].hasBomb;
+      if (isBoom) {
         q('#bombMsg').innerHTML = '💥 <b style="color:#C43E57;">ドカン！爆発した人の負け！</b>';
         bombTiles.forEach(tile => tile.opened = true);
       } else {
         q('#bombMsg').textContent = 'セーフ！次の人の番です';
       }
       renderBombGame();
+      pushGamePatch({ mode: 'bomb', bomb: { tiles: bombTiles, actorUid: uid, boom: isBoom } });
     };
   });
 }
@@ -2459,8 +2747,12 @@ function renderQuizArea(myName: string, partnerName: string, forceEvaluate = fal
       if (quizRevealed) return;
       const player = b.dataset.player;
       const idx = Number(b.dataset.idx);
-      if (player === 'P1') quizPickP1 = idx;
-      else quizPickP2 = idx;
+      if (player === 'P1') {
+        quizPickP1 = idx;
+        pushGamePatch({ mode: 'quiz' }, 'quiz_picks', idx);
+      } else {
+        quizPickP2 = idx;
+      }
 
       if (quizPickP1 !== null && quizPickP2 !== null) {
         evaluateQuiz();
@@ -2938,6 +3230,7 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
   const switchMiniGame = (mode: typeof miniGameMode) => {
     miniGameMode = mode;
     renderMiniGameTabs();
+    pushGamePatch({ mode });
   };
 
   q('#btnGameSync')?.addEventListener('click', () => switchMiniGame('sync'));
@@ -2950,7 +3243,7 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
 
   q('#bombResetBtn')?.addEventListener('click', () => {
     q('#bombMsg').textContent = '交互にタップ！ハズレ(💣)で負け';
-    initBombGame();
+    initBombGame(true);
   });
 
   document.querySelectorAll('.quiz-theme-chip').forEach((chip: any) => {
@@ -2981,7 +3274,9 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
       quizPickP1 = null;
       quizPickP2 = null;
       quizRevealed = false;
+      lastQuizId = Date.now();
       renderQuizArea(myName, partnerName);
+      pushGamePatch({ mode: 'quiz', quiz_id: lastQuizId, quiz: currentQuiz, quiz_picks: {} });
     } catch (err: any) {
       alert(err.message);
     } finally {
@@ -3622,10 +3917,14 @@ function save() {
 }
 
 async function logout() {
+  if (pair && liveDbAvailable) await pollLiveState(false);
+  if (livePollTimer) { clearInterval(livePollTimer); livePollTimer = null; }
   localStorage.removeItem('pp_cache');
   hasBooted = false;
   uid = '';
   pair = '';
+  partnerOnline = false;
+  lastGameVer = 0;
   await supabase.auth.signOut();
   boot();
 }
