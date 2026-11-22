@@ -30,10 +30,9 @@ let recipeImageBase64 = '';
 let recipeMood = '時短・簡単';
 let lastRecipeHtml = '';
 
-// ミニゲーム用の状態（オンライン2台同時接続＆7種ゲーム対応）
+// ミニゲーム用の状態（1台で2人遊べる7種ミニゲーム対応）
 type MiniGameMode = 'sync' | 'timer' | 'balloon' | 'ttt' | 'react' | 'bomb' | 'quiz';
 let miniGameMode: MiniGameMode = 'sync';
-let partnerOnline = false;
 
 // 💞 2. 以心伝心チャレンジ
 let syncTopic = 'ふたりで次に行きたい旅行先は？';
@@ -128,27 +127,27 @@ function parseSmartMemo(memo: any): { type: 'voice' | 'smart', rawText: string, 
   return null;
 }
 
-// 緑のふわっと出る通知（トースト）
+// 洗練されたフローティング通知（iOS風トースト）
 function showToast(msg: string, isError = false) {
   let t = q('#toastMsg');
   if (!t) {
     t = document.createElement('div');
     t.id = 'toastMsg';
-    t.style.cssText = `position:fixed; bottom:70px; left:50%; transform:translateX(-50%); color:#fff; padding:12px 24px; border-radius:30px; font-weight:bold; z-index:999999; opacity:0; transition:all 0.3s; pointer-events:none; font-size:14px; white-space:nowrap;`;
+    t.style.cssText = `position:fixed; bottom:84px; left:50%; transform:translateX(-50%); color:#fff; padding:11px 18px; border-radius:999px; font-weight:700; z-index:999999; opacity:0; transition:all 0.28s cubic-bezier(0.2,0.8,0.2,1); pointer-events:none; font-size:13px; max-width:calc(100vw - 32px); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);`;
     document.body.appendChild(t);
   }
-  t.style.background = isError ? '#bf4f68' : '#4caf50';
-  t.style.boxShadow = isError ? '0 4px 12px rgba(191,79,104,0.3)' : '0 4px 12px rgba(76,175,80,0.3)';
+  t.style.background = isError ? 'rgba(196, 62, 87, 0.94)' : 'rgba(33, 28, 31, 0.92)';
+  t.style.boxShadow = isError ? '0 8px 24px rgba(196, 62, 87, 0.32)' : '0 8px 24px rgba(20, 14, 18, 0.24)';
   t.textContent = msg;
-  t.style.bottom = '70px';
+  t.style.bottom = '84px';
   t.style.opacity = '0';
-  void t.offsetWidth; 
-  t.style.bottom = '90px';
+  void t.offsetWidth;
+  t.style.bottom = '96px';
   t.style.opacity = '1';
   setTimeout(() => {
-    t.style.bottom = '70px';
+    t.style.bottom = '84px';
     t.style.opacity = '0';
-  }, 2500);
+  }, 2400);
 }
 
 // 共通：画像ファイルを圧縮Base64に変換
@@ -561,14 +560,6 @@ function getDataSignature() {
 }
 
 let isManualSyncing = false;
-let liveChannel: any = null;
-let dbChannel: any = null;
-let liveStatus: 'idle' | 'connecting' | 'connected' | 'error' = 'idle';
-let liveReconnectTimer: any = null;
-let liveHeartbeatTimer: any = null;
-let partnerLastPingAt = 0;
-let sameAccountOtherDevice = false;
-const clientSessionId = 'c_' + Math.random().toString(36).slice(2, 10) + '_' + Date.now().toString(36);
 
 // 手動更新ボタン処理
 async function manualSync() {
@@ -583,15 +574,10 @@ async function manualSync() {
   try {
     await load();
     await processAutoSubs();
-    if (liveStatus !== 'connected') {
-      setupRealtime(true);
-    } else {
-      sendLivePing();
-    }
     render(false);
-    showToast('✅ 最新データに更新しました！');
+    showToast('最新データに更新しました');
   } catch {
-    showToast('⚠️ 更新に失敗しました。通信環境を確認してください', true);
+    showToast('更新に失敗しました。通信環境を確認してください', true);
   } finally {
     isManualSyncing = false;
     document.querySelectorAll('.manual-sync-btn').forEach((b: any) => {
@@ -601,392 +587,11 @@ async function manualSync() {
   }
 }
 
-// オンライン状態の再判定（Supabase Presence ＋ Broadcast Ping両方で確実に検知）
-function recomputePartnerOnline() {
-  let presencePartner = false;
-  let sameOther = false;
-  try {
-    if (liveChannel && typeof liveChannel.presenceState === 'function') {
-      const state = liveChannel.presenceState() || {};
-      const entries: any[] = [];
-      Object.entries(state).forEach(([key, arr]: [string, any]) => {
-        if (Array.isArray(arr)) {
-          arr.forEach(item => entries.push({ _key: key, ...item }));
-        }
-      });
-      presencePartner = entries.some(e => (e.user_id && e.user_id !== uid) || (e._key && !e._key.startsWith(`${uid}_`) && e._key !== uid));
-      sameOther = entries.some(e => e.user_id === uid && e.client_id && e.client_id !== clientSessionId);
-    }
-  } catch {}
-  const pingFresh = partnerLastPingAt > 0 && (Date.now() - partnerLastPingAt < 15000);
-  partnerOnline = presencePartner || pingFresh;
-  sameAccountOtherDevice = sameOther;
-  updateOnlineBadges();
-}
-
-// オンライン状態のバッジ表示更新（タップで接続確認・再接続対応）
-function updateOnlineBadges() {
-  const partnerMember = members.find(m => m.user_id !== uid);
-  const pName = partnerMember?.profiles?.display_name || '相手';
-  document.querySelectorAll('.partner-online-badge').forEach((el: any) => {
-    el.style.cursor = 'pointer';
-    el.title = 'タップしてオンライン状態を確認・再接続';
-    const isCompact = el.dataset.compact === '1';
-    if (partnerOnline) {
-      const labelOnline = isCompact ? 'オンライン' : `${esc(pName)}: オンライン`;
-      el.innerHTML = `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#22c55e; box-shadow:0 0 6px #22c55e; margin-right:4px; flex-shrink:0;"></span>${labelOnline}`;
-      el.style.background = '#ecfdf5';
-      el.style.color = '#15803d';
-      el.style.borderColor = '#bbf7d0';
-    } else if (liveStatus === 'connecting') {
-      const labelConn = isCompact ? '接続中…' : 'サーバー接続中…';
-      el.innerHTML = `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#f59e0b; margin-right:4px; flex-shrink:0;"></span>${labelConn}`;
-      el.style.background = '#fffbeb';
-      el.style.color = '#b45309';
-      el.style.borderColor = '#fde68a';
-    } else if (liveStatus === 'error') {
-      const labelErr = isCompact ? '再接続中' : '通信再接続中…';
-      el.innerHTML = `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#ef4444; margin-right:4px; flex-shrink:0;"></span>${labelErr}`;
-      el.style.background = '#fef2f2';
-      el.style.color = '#b91c1c';
-      el.style.borderColor = '#fecaca';
-    } else {
-      const labelOffline = isCompact ? 'オフライン' : `${esc(pName)}: オフライン`;
-      el.innerHTML = `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#b5a6ac; margin-right:4px; flex-shrink:0;"></span>${labelOffline}`;
-      el.style.background = '#F7F4F6';
-      el.style.color = '#9A8E94';
-      el.style.borderColor = '#EFE9EC';
-    }
-  });
-}
-
-function sendLivePing() {
-  if (!liveChannel || liveStatus !== 'connected') return;
-  try {
-    liveChannel.send({
-      type: 'broadcast',
-      event: 'presence_ping',
-      payload: { sender: uid, client_id: clientSessionId, ts: Date.now() }
-    });
-  } catch {}
-}
-
-function sendLiveBye() {
-  if (!liveChannel || liveStatus !== 'connected') return;
-  try {
-    liveChannel.send({
-      type: 'broadcast',
-      event: 'presence_bye',
-      payload: { sender: uid, client_id: clientSessionId }
-    });
-    liveChannel.untrack?.();
-  } catch {}
-}
-
-// ゲームイベントを相手のスマホにリアルタイム送信（切断時は自動再接続＆リトライ）
-async function sendGameEvent(type: string, payload: any = {}) {
-  if (!pair) return;
-  const doSend = async () => {
-    if (!liveChannel) return 'error';
-    try {
-      return await liveChannel.send({
-        type: 'broadcast',
-        event: 'game_event',
-        payload: { sender: uid, client_id: clientSessionId, type, ...payload }
-      });
-    } catch {
-      return 'error';
-    }
-  };
-
-  if (!liveChannel || liveStatus !== 'connected') {
-    await setupRealtime(true);
-    setTimeout(() => { doSend(); }, 600);
-    return;
-  }
-
-  const res = await doSend();
-  if (res !== 'ok') {
-    await setupRealtime(true);
-    setTimeout(() => { doSend(); }, 700);
-  }
-}
-
-// 相手からのリアルタイムゲーム通信を受信
-function handleRemoteGameEvent(msg: any) {
-  if (!msg) return;
-  if (msg.client_id && msg.client_id === clientSessionId) return;
-  if (!msg.client_id && msg.sender === uid) return;
-
-  // 相手からのゲーム通信が届いた＝相手は確実にオンライン！
-  if (msg.sender && msg.sender !== uid) {
-    partnerLastPingAt = Date.now();
-    if (!partnerOnline) {
-      partnerOnline = true;
-      updateOnlineBadges();
-    }
-  }
-
-  const myName = members.find(m => m.user_id === uid)?.profiles?.display_name || '自分';
-  const partnerName = members.find(m => m.user_id !== uid)?.profiles?.display_name || '相手';
-
-  if (currentTab !== 'minigame') {
-    showToast(`🎮 ${partnerName}がオンライン対戦を始めました！（☰メニュー→オンライン対戦）`);
-  }
-
-  switch (msg.type) {
-    case 'switch_mode':
-      if (msg.mode) {
-        miniGameMode = msg.mode;
-        renderMiniGameTabs();
-      }
-      break;
-    // 💞 以心伝心ゲーム
-    case 'sync_topic':
-      syncTopic = msg.topic || syncTopic;
-      syncMyAns = '';
-      syncPartnerAns = '';
-      syncResultHtml = '';
-      syncRevealed = false;
-      renderSyncGame(myName, partnerName);
-      showToast('💞 相手がお題を変更しました！');
-      break;
-    case 'sync_ans':
-      syncPartnerAns = msg.ans || '';
-      renderSyncGame(myName, partnerName);
-      if (syncMyAns && syncPartnerAns && !syncRevealed) {
-        evaluateSyncGame(myName, partnerName, false);
-      } else {
-        showToast('🔒 相手が回答を入力しました！');
-      }
-      break;
-    case 'sync_result':
-      syncResultHtml = msg.html || '';
-      syncRevealed = true;
-      syncScore = msg.score ?? syncScore;
-      renderSyncGame(myName, partnerName);
-      break;
-
-    // ⏱️ 10.00秒ピタリ止めバトル
-    case 'timer_start':
-      startTimerChallengeLocal();
-      showToast('⏱️ 相手が10秒チャレンジをスタートしました！');
-      break;
-    case 'timer_stop':
-      timerPartnerTime = Number(msg.time);
-      renderTimerChallenge(myName, partnerName);
-      break;
-
-    // 🎈 風船チキンレース
-    case 'balloon_init':
-      balloonCount = 0;
-      balloonLimit = msg.limit || 22;
-      balloonTurnUid = msg.turnUid || uid;
-      balloonBoom = false;
-      balloonLoserUid = '';
-      renderBalloonGame(myName, partnerName);
-      showToast('🎈 風船チキンレース開始！');
-      break;
-    case 'balloon_push':
-      balloonCount = msg.count;
-      balloonBoom = !!msg.boom;
-      balloonLoserUid = msg.loserUid || '';
-      balloonTurnUid = msg.nextTurnUid || uid;
-      renderBalloonGame(myName, partnerName);
-      break;
-
-    // ⭕ 消えるマルバツゲーム
-    case 'ttt_init':
-      tttMoves = [];
-      tttTurnUid = msg.turnUid || uid;
-      tttWinnerUid = '';
-      renderTttGame(myName, partnerName);
-      showToast('⭕ 消えるマルバツ開始！');
-      break;
-    case 'ttt_move':
-      tttMoves = msg.moves || [];
-      tttTurnUid = msg.nextTurnUid || uid;
-      tttWinnerUid = msg.winnerUid || '';
-      renderTttGame(myName, partnerName);
-      break;
-
-    // 💣 爆弾ゲーム
-    case 'bomb_init':
-      bombTiles = msg.tiles || [];
-      if (q('#bombMsg')) q('#bombMsg').textContent = '交互にタップ！ハズレ(💣)で負け！';
-      renderBombGame();
-      showToast('💣 相手が爆弾ゲームをリセットしました！');
-      break;
-    case 'bomb_open':
-      if (bombTiles[msg.idx]) {
-        bombTiles[msg.idx].opened = true;
-        if (bombTiles[msg.idx].hasBomb) {
-          if (q('#bombMsg')) q('#bombMsg').innerHTML = `💥 <b style="color:#4caf50;">相手(${esc(partnerName)})が爆発！！あなたの勝ち！🎉</b>`;
-          bombTiles.forEach(t => t.opened = true);
-        } else {
-          if (q('#bombMsg')) q('#bombMsg').textContent = `${partnerName}はセーフ！あなたの番です`;
-        }
-        renderBombGame();
-      }
-      break;
-
-    // 🤖 AIクイズ
-    case 'quiz_new':
-      currentQuiz = msg.quiz;
-      quizPickP1 = null;
-      quizPickP2 = null;
-      quizRevealed = false;
-      renderQuizArea(myName, partnerName);
-      showToast('🎲 相手が新しいAIクイズを出題しました！');
-      break;
-    case 'quiz_pick':
-      quizPickP2 = msg.pick;
-      if (quizPickP1 !== null && quizPickP2 !== null && !quizRevealed) {
-        // 2人とも選んだので採点
-        renderQuizArea(myName, partnerName, true);
-      } else {
-        renderQuizArea(myName, partnerName);
-        showToast(`🔒 ${partnerName}が回答を選択しました！`);
-      }
-      break;
-  }
-}
-
-// Supabase Realtime 購読（オンラインPresence＆ミニゲーム通信は専用チャネルに完全分離し、iPhone復帰時の自動再接続に対応）
-async function setupRealtime(forceReconnect = false) {
-  if (!pair || !uid) return;
-  if (!forceReconnect && liveChannel && liveStatus === 'connected') return;
-
-  if (liveReconnectTimer) {
-    clearTimeout(liveReconnectTimer);
-    liveReconnectTimer = null;
-  }
-
-  // Publishable Key利用時もログインJWTでRealtime認証を通す
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session?.access_token) {
-      supabase.realtime.setAuth(session.access_token);
-    }
-  } catch {}
-
-  if (liveChannel) {
-    try { await supabase.removeChannel(liveChannel); } catch {}
-    liveChannel = null;
-  }
-
-  liveStatus = 'connecting';
-  updateOnlineBadges();
-
-  // ① 専用ライブチャネル（Presence + Broadcast のみ：DBのRealtime設定に依存せず確実に動く！）
-  const channel = supabase
-    .channel(`pair_live_${pair}`, {
-      config: {
-        broadcast: { self: false, ack: false },
-        presence: { key: `${uid}_${clientSessionId}` }
-      }
-    })
-    .on('presence', { event: 'sync' }, () => recomputePartnerOnline())
-    .on('presence', { event: 'join' }, () => recomputePartnerOnline())
-    .on('presence', { event: 'leave' }, () => recomputePartnerOnline())
-    .on('broadcast', { event: 'presence_ping' }, (payload: any) => {
-      const msg = payload?.payload;
-      if (!msg || msg.client_id === clientSessionId) return;
-      if (msg.sender && msg.sender !== uid) {
-        partnerLastPingAt = Date.now();
-        recomputePartnerOnline();
-        try {
-          channel.send({
-            type: 'broadcast',
-            event: 'presence_pong',
-            payload: { sender: uid, client_id: clientSessionId, ts: Date.now() }
-          });
-        } catch {}
-      } else if (msg.sender === uid) {
-        sameAccountOtherDevice = true;
-      }
-    })
-    .on('broadcast', { event: 'presence_pong' }, (payload: any) => {
-      const msg = payload?.payload;
-      if (!msg || msg.client_id === clientSessionId) return;
-      if (msg.sender && msg.sender !== uid) {
-        partnerLastPingAt = Date.now();
-        recomputePartnerOnline();
-      }
-    })
-    .on('broadcast', { event: 'presence_bye' }, (payload: any) => {
-      const msg = payload?.payload;
-      if (!msg || msg.client_id === clientSessionId) return;
-      if (msg.sender && msg.sender !== uid) {
-        partnerLastPingAt = 0;
-        recomputePartnerOnline();
-      }
-    })
-    .on('broadcast', { event: 'game_event' }, (payload: any) => {
-      handleRemoteGameEvent(payload?.payload);
-    })
-    .subscribe(async (status: string) => {
-      if (liveChannel !== channel) return;
-      if (status === 'SUBSCRIBED') {
-        liveStatus = 'connected';
-        try {
-          await channel.track({
-            user_id: uid,
-            client_id: clientSessionId,
-            online_at: new Date().toISOString()
-          });
-        } catch {}
-        sendLivePing();
-        recomputePartnerOnline();
-      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-        liveStatus = 'error';
-        recomputePartnerOnline();
-        if (document.visibilityState === 'visible' && !liveReconnectTimer) {
-          liveReconnectTimer = setTimeout(() => {
-            liveReconnectTimer = null;
-            if (document.visibilityState === 'visible' && pair) setupRealtime(true);
-          }, 3000);
-        }
-      }
-    });
-
-  liveChannel = channel;
-
-  // ハートビート監視（5秒ごとにping送信＆15秒応答なしでオフライン判定＆切断時の自動復旧）
-  if (!liveHeartbeatTimer) {
-    liveHeartbeatTimer = setInterval(() => {
-      if (!pair || !uid) return;
-      if (document.visibilityState !== 'visible') return;
-      if (liveStatus === 'connected') {
-        sendLivePing();
-        recomputePartnerOnline();
-      } else if (liveStatus !== 'connecting' && navigator.onLine !== false) {
-        setupRealtime(true);
-      }
-    }, 5000);
-  }
-
-  // ② DB変更購読は別チャネルに分離（テーブル側でRealtimeが無効でもオンライン機能を道連れにしない）
-  if (!dbChannel) {
-    try {
-      dbChannel = supabase
-        .channel(`pair_db_${pair}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses', filter: `pair_id=eq.${pair}` }, () => {
-          backgroundSync(true);
-        })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'settlements', filter: `pair_id=eq.${pair}` }, () => {
-          backgroundSync(true);
-        })
-        .subscribe();
-    } catch {}
-  }
-}
-
 let pendingSyncRender = false;
 let hasBooted = false;
 let isBooting = false;
 
-// リアルタイム＆バックグラウンド同期機能（追加・編集・削除・名前変更すべて検知）
+// バックグラウンド同期機能（追加・編集・削除・名前変更を自動検知）
 async function backgroundSync(forceCheck = false) {
   if (!pair || (!forceCheck && document.visibilityState !== 'visible') || isManualSyncing) return;
   
@@ -1005,10 +610,9 @@ async function backgroundSync(forceCheck = false) {
       render(false);
       pendingSyncRender = false;
     } else {
-      // 入力中・録音中・モーダル表示中は画面を作り直さず、操作が終わってから反映
       pendingSyncRender = true;
     }
-    showToast('🔄 パートナーの更新を同期しました');
+    showToast('パートナーの更新を反映しました');
   } else if (pendingSyncRender && canRender) {
     render(false);
     pendingSyncRender = false;
@@ -1017,18 +621,10 @@ async function backgroundSync(forceCheck = false) {
 
 setInterval(() => backgroundSync(false), 5000);
 document.addEventListener('visibilitychange', async () => {
-  if (!pair) return;
-  if (document.visibilityState === 'visible') {
-    // iPhone SafariはバックグラウンドでWebSocketを切断するため復帰時に必ず再接続＆ping
-    await setupRealtime(true);
+  if (document.visibilityState === 'visible' && pair) {
     await backgroundSync(true);
-  } else {
-    sendLiveBye();
   }
 });
-window.addEventListener('pagehide', () => { sendLiveBye(); });
-window.addEventListener('pageshow', () => { if (pair) setupRealtime(true); });
-window.addEventListener('online', () => { if (pair) setupRealtime(true); });
 
 // 爆速起動コア
 const initCache = () => {
@@ -1056,9 +652,6 @@ async function boot() {
       return authView();
     }
     uid = session.user.id;
-    if (session.access_token) {
-      try { supabase.realtime.setAuth(session.access_token); } catch {}
-    }
 
     const { data, error } = await supabase.from('pair_members').select('pair_id').eq('user_id', uid).maybeSingle();
     if (error) return fail(error.message);
@@ -1068,7 +661,6 @@ async function boot() {
     hasBooted = true;
     await load();
     await processAutoSubs();
-    setupRealtime(true);
     render(false);
   } finally {
     isBooting = false;
@@ -1366,7 +958,12 @@ async function render(isInitial = false) {
     }
   });
 
-  if (timeline.length === 0) timelineHtml = '<p class="muted" style="text-align: center; padding: 24px 0;">まだ履歴がありません</p>';
+  if (timeline.length === 0) timelineHtml = '<p class="muted" style="text-align: center; padding: 28px 0;">まだ履歴がありません</p>';
+
+  const validFilteredExps = filteredExpenses.filter(e => !(typeof e.title === 'string' && e.title.startsWith('[削除済]')));
+  const filteredTotalAmount = validFilteredExps.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+  const myPaidTotal = expenses.filter(e => !(typeof e.title === 'string' && e.title.startsWith('[削除済]')) && e.payer_id === uid).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const partnerPaidTotal = expenses.filter(e => !(typeof e.title === 'string' && e.title.startsWith('[削除済]')) && e.payer_id !== uid).reduce((s, e) => s + (Number(e.amount) || 0), 0);
 
   const fmtSubDate = (d: any) => {
     if (!d) return '-';
@@ -1379,93 +976,96 @@ async function render(isInitial = false) {
 
   app.innerHTML = `
     <style>
-      .sched-mode-btn { flex: 1; padding: 10px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; border: 1px solid transparent; cursor: pointer; transition: all 0.18s ease; white-space: nowrap; }
-      .sched-mode-btn.active { background: #231E21; color: #fff; box-shadow: 0 4px 12px rgba(35, 30, 33, 0.16); }
-      .sched-mode-btn.inactive { background: #F7F4F6; color: #6E6369; border-color: #EFE9EC; }
-      .ticket-card { background: #FDF8F9; border: 1px solid #F3DCE2; border-left: 5px solid #E55B73; border-radius: 16px; padding: 14px 16px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
-      .chip-btn { display: inline-block; background: #F7F4F6; color: #6E6369; padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; margin: 0 6px 6px 0; border: 1px solid #EFE9EC; cursor: pointer; transition: all 0.15s ease; }
-      .chip-btn.selected { background: #FCEEF1; color: #C9465E; border-color: #E55B73; font-weight: 700; }
-      .ai-tool-tile { width: 100%; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 3px; padding: 9px 4px; border-radius: 12px; font-size: 11.5px; font-weight: 700; background: #F7F4F6; color: #231E21; border: 1px solid #EFE9EC; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .drawer-item { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 13px 14px; margin-bottom: 8px; border-radius: 14px; background: #F7F4F6; border: 1px solid #EFE9EC; color: #231E21; font-size: 14px; font-weight: 700; text-align: left; }
+      .sched-mode-btn { flex: 1; padding: 9px 12px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid transparent; cursor: pointer; transition: all 0.18s ease; white-space: nowrap; }
+      .sched-mode-btn.active { background: #211C1F; color: #fff; box-shadow: 0 4px 10px rgba(33, 28, 31, 0.16); }
+      .sched-mode-btn.inactive { background: #F7F4F6; color: #665C62; border-color: #EDE8EB; }
+      .ticket-card { background: #FCF8F9; border: 1px solid #F1D9E0; border-left: 4px solid #E2556F; border-radius: 16px; padding: 14px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+      .chip-btn { display: inline-block; background: #F7F4F6; color: #665C62; padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; margin: 0 6px 6px 0; border: 1px solid #EDE8EB; cursor: pointer; transition: all 0.15s ease; }
+      .chip-btn.selected { background: #FCEEF1; color: #C43E57; border-color: #E2556F; font-weight: 700; }
+      .ai-tool-tile { width: 100%; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 9px 4px; border-radius: 12px; font-size: 11.5px; font-weight: 700; background: #F7F4F6; color: #211C1F; border: 1px solid #EDE8EB; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .drawer-item { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 12px 14px; margin-bottom: 8px; border-radius: 14px; background: #F7F4F6; border: 1px solid #EDE8EB; color: #211C1F; font-size: 13.5px; font-weight: 700; text-align: left; }
+      .settings-subpanel { background: #F7F4F6; border: 1px solid #EDE8EB; border-radius: 14px; padding: 13px; margin-bottom: 10px; }
       @keyframes pp-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-      .manual-sync-btn.syncing .sync-icon { display: inline-block; animation: pp-spin 0.7s linear infinite; }
+      .manual-sync-btn.syncing .sync-icon { display: inline-flex; animation: pp-spin 0.7s linear infinite; }
     </style>
     <main class="app">
-      <!-- 公式アプリ風ガラスヘッダー（iPhone全機種で1行に美しく収まる設計） -->
+      <!-- 公式アプリ風ミニマル・ガラスヘッダー -->
       <header class="top">
         <div class="brand-wrap">
           <div class="brand-logo-icon">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
           </div>
           <div style="min-width: 0; flex: 1; overflow: hidden;">
-            <div style="display:flex; align-items:center; gap:6px;">
-              <div class="brand">PairPocket</div>
-              <span class="partner-online-badge" data-compact="1" style="font-size:10px; font-weight:700; padding:1px 6px; border-radius:999px; border:1px solid #EFE9EC; background:#F7F4F6; color:#9A8E94; display:inline-flex; align-items:center; white-space:nowrap; flex-shrink:0;"></span>
-            </div>
-            <div class="muted" style="font-size:11px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.25; margin-top:1px;">${esc(pairName)}</div>
+            <div class="brand">PairPocket</div>
+            <div class="muted" style="font-size:11px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.2; margin-top:1px;">${esc(pairName)}</div>
           </div>
         </div>
         <div style="display: flex; gap: 6px; align-items: center; flex-shrink: 0; white-space: nowrap;">
-          <button class="ghost manual-sync-btn" title="最新データに更新" style="padding: 7px 10px; font-size: 12px; border-radius: 11px; font-weight: 700; color: #231E21; display: inline-flex; align-items: center; gap: 3px; background: #F7F4F6; white-space: nowrap; flex-shrink: 0;"><span class="sync-icon">🔄</span> 更新</button>
-          <button id="menuBtn" class="ghost" style="width: 34px; height: 34px; padding: 0; font-size: 17px; border-radius: 11px; display: flex; align-items: center; justify-content: center; background: #F7F4F6; color: #231E21; flex-shrink: 0;">☰</button>
+          <button class="ghost manual-sync-btn" title="最新データに更新" style="padding: 7px 11px; font-size: 12px; border-radius: 11px; font-weight: 700; color: #211C1F; display: inline-flex; align-items: center; gap: 5px; background: #F7F4F6; white-space: nowrap; flex-shrink: 0;">
+            <span class="sync-icon" style="display:inline-flex;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg></span>
+            <span>更新</span>
+          </button>
+          <button id="menuBtn" class="ghost" aria-label="メニューを開く" style="width: 34px; height: 34px; padding: 0; border-radius: 11px; display: flex; align-items: center; justify-content: center; background: #F7F4F6; color: #211C1F; flex-shrink: 0;">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+          </button>
         </div>
       </header>
       
-      <!-- ☰ サイドメニュー（洗練されたドロワー） -->
-      <div id="menuDrawer" class="hide" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(25, 20, 23, 0.42); z-index: 9999; backdrop-filter: blur(4px);">
-        <div id="menuContent" style="position: absolute; top: 0; right: 0; bottom: 0; width: 285px; background: #FFFFFF; padding: 20px 18px; box-shadow: -8px 0 30px rgba(25, 20, 23, 0.14); overflow-y: auto;">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-top: max(8px, env(safe-area-inset-top)); margin-bottom: 20px; padding-bottom: 14px; border-bottom: 1px solid #EFE9EC;">
+      <!-- ☰ サイドメニュー -->
+      <div id="menuDrawer" class="hide" style="position: fixed; inset: 0; background: rgba(24, 19, 22, 0.44); z-index: 9999; backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px);">
+        <div id="menuContent" style="position: absolute; top: 0; right: 0; bottom: 0; width: 284px; background: #FFFFFF; padding: 20px 18px; box-shadow: -8px 0 32px rgba(24, 19, 22, 0.16); overflow-y: auto;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top: max(8px, env(safe-area-inset-top)); margin-bottom: 20px; padding-bottom: 14px; border-bottom: 1px solid #EDE8EB;">
             <div>
-              <div style="font-weight:800; font-size:16px; color:#231E21;">メニュー</div>
-              <div class="muted" style="font-size:11px;">${esc(myName)} ＆ ${esc(partnerName)}</div>
+              <div style="font-weight:800; font-size:16px; color:#211C1F;">メニュー</div>
+              <div class="muted" style="font-size:11px; margin-top:2px;">${esc(myName)} ＆ ${esc(partnerName)}</div>
             </div>
             <button id="closeDrawerBtn" class="ghost" style="border-radius: 50%; width: 34px; height: 34px; padding: 0; display:flex; align-items:center; justify-content:center; font-size: 18px;">×</button>
           </div>
 
-          <div class="muted" style="margin-bottom: 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;">AI ＆ コミュニケーション</div>
+          <div class="muted" style="margin-bottom: 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;">AI ＆ エンタメ</div>
           <button data-nav="recipe" class="drawer-item">
             <span style="display:flex; align-items:center; gap:10px;"><span style="width:32px; height:32px; border-radius:9px; background:#FFF4EB; display:inline-flex; align-items:center; justify-content:center; font-size:16px;">🍳</span> 今日のAI献立提案</span>
-            <span style="color:#9A8E94;">›</span>
+            <span style="color:#988D93;">›</span>
           </button>
           <button data-nav="tickets" class="drawer-item">
             <span style="display:flex; align-items:center; gap:10px;"><span style="width:32px; height:32px; border-radius:9px; background:#FCEEF1; display:inline-flex; align-items:center; justify-content:center; font-size:16px;">🎟️</span> ご褒美・おねだり券</span>
-            <span style="color:#9A8E94;">›</span>
+            <span style="color:#988D93;">›</span>
           </button>
           <button data-nav="minigame" class="drawer-item" style="margin-bottom: 20px;">
-            <span style="display:flex; align-items:center; gap:10px;"><span style="width:32px; height:32px; border-radius:9px; background:#F2EEFF; display:inline-flex; align-items:center; justify-content:center; font-size:16px;">🎮</span> オンライン対戦ゲーム</span>
-            <span style="color:#9A8E94;">›</span>
+            <span style="display:flex; align-items:center; gap:10px;"><span style="width:32px; height:32px; border-radius:9px; background:#F2EEFF; display:inline-flex; align-items:center; justify-content:center; font-size:16px;">🎮</span> ふたりでミニゲーム</span>
+            <span style="color:#988D93;">›</span>
           </button>
 
-          <div class="muted" style="margin-bottom: 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;">ライフスタイル管理</div>
+          <div class="muted" style="margin-bottom: 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;">暮らしの管理</div>
           <button data-nav="schedule" class="drawer-item">
             <span style="display:flex; align-items:center; gap:10px;"><span style="width:32px; height:32px; border-radius:9px; background:#EEF6FF; display:inline-flex; align-items:center; justify-content:center; font-size:16px;">📅</span> ふたりの予定カレンダー</span>
-            <span style="color:#9A8E94;">›</span>
+            <span style="color:#988D93;">›</span>
           </button>
           <button data-nav="utilities" class="drawer-item">
             <span style="display:flex; align-items:center; gap:10px;"><span style="width:32px; height:32px; border-radius:9px; background:#EBF9F5; display:inline-flex; align-items:center; justify-content:center; font-size:16px;">💧</span> 水道・光熱費レポート</span>
-            <span style="color:#9A8E94;">›</span>
+            <span style="color:#988D93;">›</span>
           </button>
         </div>
       </div>
 
       <!-- メイン①：入力タブ -->
       <section id="sec-entry">
-        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 4px; margin-bottom: 10px; padding: 0 2px;">
-          <h2 style="margin: 0; font-size: 18px; font-weight: 800; color: #231E21; white-space: nowrap;">支出を記録</h2>
-          <button id="saveTop" class="primary" style="padding: 10px 20px; font-size: 14px; border-radius: 999px; font-weight: 800; white-space: nowrap; flex-shrink: 0;">＋ 追加する</button>
+        <div class="section-head">
+          <h2 class="section-title">支出を記録</h2>
+          <button id="saveTop" class="primary" style="padding: 9px 19px; font-size: 13.5px; border-radius: 999px; font-weight: 800; white-space: nowrap; flex-shrink: 0;">＋ 追加する</button>
         </div>
 
         <div class="card" style="margin-top: 0;">
-          <!-- AI スマート入力ツールバー（iPhone幅で3等分1行にピタッと収まるグリッド） -->
-          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-bottom: 12px;">
-            <button id="btnQuickVoice" type="button" class="ai-tool-tile" style="background:#FCEEF1; border-color:#F3DCE2; color:#C9465E;">🎙️ 音声入力</button>
+          <!-- AI スマート入力ツールバー -->
+          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-bottom: 14px;">
+            <button id="btnQuickVoice" type="button" class="ai-tool-tile" style="background:#FCEEF1; border-color:#F1D9E0; color:#C43E57;">🎙️ 音声入力</button>
             <button id="btnSmartInput" type="button" class="ai-tool-tile">🪄 AI文章</button>
             <button id="btnReceipt" type="button" class="ai-tool-tile">📷 レシート</button>
           </div>
           <input type="file" id="receiptInput" accept="image/*" style="display:none;">
 
           <div style="display: flex; justify-content: space-between; align-items: center;">
-            <label class="muted" style="font-weight: 700; font-size: 11px;">相手への請求額</label>
+            <label class="field-label">相手への請求額</label>
             <div id="result" class="result" style="margin: 0;">計算結果：¥0</div>
           </div>
 
@@ -1476,7 +1076,7 @@ async function render(isInitial = false) {
           
           ${pendingReceiptItems.length > 0 ? `
             <div style="margin-top: 8px; text-align: right;">
-              <button id="reopenReceiptBtn" type="button" class="ghost" style="padding: 6px 12px; font-size: 11px; background: #FCEEF1; color: #C9465E; border: 1px solid #F3DCE2; border-radius: 10px; font-weight: 700;">
+              <button id="reopenReceiptBtn" type="button" class="ghost" style="padding: 6px 12px; font-size: 11px; background: #FCEEF1; color: #C43E57; border: 1px solid #F1D9E0; border-radius: 10px; font-weight: 700;">
                 🧾 レシート内訳を確認・再編集 (${pendingReceiptItems.length}品)
               </button>
             </div>
@@ -1494,24 +1094,24 @@ async function render(isInitial = false) {
           
           <button id="split" class="split">÷ 2人で割り勘（50%）にする</button>
           
-          <label class="muted" style="margin-top: 18px; display: block; font-weight: 700; font-size: 11px;">立て替えた人</label>
+          <label class="field-label" style="margin-top: 18px;">立て替えた人</label>
           <div class="payer-buttons">${members.map((m) => `<button type="button" class="payer-btn ${m.user_id === uid ? 'selected' : ''}" data-payer="${m.user_id}">${esc(name(m.user_id))}</button>`).join('')}</div>
           <input id="payer" type="hidden" value="${uid}">
           
-          <div style="border-top: 1px solid #EFE9EC; margin: 16px 0 14px;"></div>
+          <div style="border-top: 1px solid #EDE8EB; margin: 16px 0 14px;"></div>
 
           ${subs.length > 0 ? `
-            <label class="muted" style="display:block; margin-bottom:6px; font-weight:700; font-size:11px;">定額・サブスクからワンタップ入力</label>
+            <label class="field-label" style="margin-bottom:6px;">定額・サブスクから入力</label>
             <div style="overflow-x: auto; white-space: nowrap; padding-bottom: 6px; margin-bottom: 12px;">
-              ${subs.map((s:any) => `<div class="sub-fill-btn sub-chip" data-id="${s.id}">⚡ ${esc(s.title)}</div>`).join('')}
+              ${subs.map((s:any) => `<div class="sub-fill-btn sub-chip" data-id="${s.id}">${esc(s.title)}</div>`).join('')}
             </div>
           ` : ''}
 
-          <label class="muted" style="font-weight: 700; font-size: 11px;">内容・メモ</label>
+          <label class="field-label">内容・メモ</label>
           <input id="title" class="field" placeholder="例：カフェ、スーパー、日用品" value="${currentTitle}">
           
-          <label class="muted" style="font-weight: 700; font-size: 11px;">カテゴリー</label>
-          <select id="cat" class="field" style="margin-bottom: 4px;">
+          <label class="field-label">カテゴリー</label>
+          <select id="cat" class="field" style="margin-bottom: 2px;">
             <option value="" selected>カテゴリーを選択（任意）</option>
             ${['食費', '外食', '生活', '家賃', '光熱費', '交通', '娯楽', '旅行', 'その他'].map(x => `<option value="${x}">${x}</option>`).join('')}
           </select>
@@ -1520,138 +1120,168 @@ async function render(isInitial = false) {
 
       <!-- メイン②：精算タブ -->
       <section id="sec-home">
-        <div class="card hero" style="padding: 26px 22px; text-align: center; margin-top: 14px;">
-          <div class="muted" style="margin-bottom: 10px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;">CURRENT BALANCE</div>
-          ${members.length < 2 ? '<h2 style="color:#fff;">パートナーの参加待ち</h2>' : amount < 1 ? '<div class="big" style="font-size: 26px; margin: 18px 0; color:#fff;">精算完了・差額なし ✓</div>' : `
-            <div style="display:inline-flex; align-items:center; gap:10px; background:rgba(255,255,255,0.12); padding:6px 16px; border-radius:999px; font-size:14px; font-weight:700; margin-bottom:8px;">
+        <div class="section-head">
+          <h2 class="section-title">精算サマリー</h2>
+        </div>
+
+        <div class="card hero" style="padding: 26px 20px; text-align: center; margin-top: 0;">
+          <div class="muted" style="margin-bottom: 10px; font-size: 11px; letter-spacing: 0.08em; font-weight: 700;">CURRENT BALANCE</div>
+          ${members.length < 2 ? '<h2 style="color:#fff; margin-bottom:0;">パートナーの参加待ち</h2>' : amount < 1 ? '<div class="big" style="font-size: 26px; margin: 16px 0; color:#fff;">精算完了・差額なし ✓</div>' : `
+            <div style="display:inline-flex; align-items:center; gap:10px; background:rgba(255,255,255,0.13); padding:6px 16px; border-radius:999px; font-size:13.5px; font-weight:700; margin-bottom:8px;">
               <span>${esc(name(sender))}</span>
-              <span style="opacity:0.65;">━━▶</span>
+              <span style="opacity:0.65;">→</span>
               <span>${esc(name(receiver))}</span>
             </div>
-            <div class="big" style="margin-bottom: 22px; font-size: 42px;">${yen(amount)}</div>
-            <div style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.18); border-radius: 18px; padding: 16px; text-align: left; backdrop-filter: blur(8px);">
-              <label style="font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.85);">今回精算する金額</label>
+            <div class="big" style="margin-bottom: 20px; font-size: 40px;">${yen(amount)}</div>
+            <div style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.18); border-radius: 16px; padding: 14px; text-align: left; backdrop-filter: blur(8px);">
+              <label style="font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.86);">今回精算する金額</label>
               <div style="display: flex; gap: 8px; margin-top: 6px;">
-                <input type="number" id="settleAmount" class="field" style="margin: 0; flex: 1; font-size: 18px; font-weight: 800; color:#231E21; background:#fff; border:none;" value="${amount}">
-                <button id="settleFullBtn" style="background: rgba(255,255,255,0.22); color: #fff; border: 1px solid rgba(255,255,255,0.3); border-radius: 12px; padding: 0 16px; font-weight: 700;">全額</button>
+                <input type="number" id="settleAmount" class="field" style="margin: 0; flex: 1; font-size: 18px; font-weight: 800; color:#211C1F; background:#fff; border:none;" value="${amount}">
+                <button id="settleFullBtn" style="background: rgba(255,255,255,0.22); color: #fff; border: 1px solid rgba(255,255,255,0.28); border-radius: 12px; padding: 0 15px; font-weight: 700; white-space: nowrap;">全額</button>
               </div>
               <button id="settleBtn" class="settle" style="margin-top: 12px;">この金額で精算を記録する</button>
             </div>
           `}
         </div>
+
+        <div class="stat-grid">
+          <div class="stat-card">
+            <div class="stat-label">${esc(myName)}の累計請求額</div>
+            <div class="stat-value">${yen(myPaidTotal)}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">${esc(partnerName)}の累計請求額</div>
+            <div class="stat-value">${yen(partnerPaidTotal)}</div>
+          </div>
+        </div>
       </section>
 
-      <!-- メイン③：履歴タブ -->
+      <!-- メイン③：履歴タブ（スクロール枠バグを完全解消した固定ヘッダー＋独立スクロール構造） -->
       <section id="sec-history">
-        <div class="card" style="padding: 12px 14px; margin-top: 14px; display: flex; gap: 8px; align-items: center;">
-          <select id="monthSelect" class="field" style="margin:0; font-weight:700; flex: 1;">
+        <div class="section-head">
+          <h2 class="section-title">履歴・分析</h2>
+          <button id="btnAiAnalyst" class="ghost" style="padding: 8px 13px; font-size: 12px; font-weight: 700; background: #FCEEF1; color: #C43E57; border-color: #F1D9E0; border-radius: 999px; white-space: nowrap; flex-shrink: 0;">🤖 AI家計診断</button>
+        </div>
+
+        <div class="card" style="padding: 12px 14px; margin-top: 0;">
+          <select id="monthSelect" class="field" style="margin:0; font-weight:700;">
             <option value="all" ${currentMonth === 'all' ? 'selected' : ''}>すべての期間を表示</option>
             ${months.map(m => `<option value="${m}" ${currentMonth === m ? 'selected' : ''}>${m.split('-')[0]}年${m.split('-')[1]}月</option>`).join('')}
           </select>
-          <button id="btnAiAnalyst" class="ghost" style="padding: 11px 14px; font-size: 12px; font-weight: 700; background: #FCEEF1; color: #C9465E; border-color: #F3DCE2; border-radius: 12px; white-space: nowrap;">🤖 AI家計診断</button>
-        </div>
-        <div class="card history-scroll">
-          <div style="display:flex; justify-content:space-between; align-items:center; position: sticky; top: 0; background: #fff; padding-bottom: 8px; border-bottom: 1px solid #EFE9EC; z-index: 1;">
-            <h2 style="margin: 0;">タイムライン</h2>
-            <span class="muted" style="font-size:10px;">🧾🎙️🪄タップで内訳表示</span>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; padding-top:10px; border-top:1px solid #EDE8EB; font-size:12px;">
+            <span class="muted">選択期間の請求合計 (${validFilteredExps.length}件)</span>
+            <b style="font-size:15px; color:#211C1F; font-variant-numeric:tabular-nums;">${yen(filteredTotalAmount)}</b>
           </div>
-          <div style="margin-top: 6px;">${timelineHtml}</div>
         </div>
-        <div class="card history-scroll">
-          <h2 style="position: sticky; top: 0; background: #fff; padding-bottom: 8px; border-bottom: 1px solid #EFE9EC; margin-top: 0; z-index: 1;">精算履歴</h2>
-          ${filteredSettlements.map(s => `<div class="expense"><div class="expense-left"><div class="cat-avatar" style="background:#EBF7F2; color:#1F6E50; border-color:#D2EFE3;">✓</div><div><b class="break-text" style="font-size:14px;">${esc(name(s.from_user_id))} → ${esc(name(s.to_user_id))}</b><div class="muted" style="font-size:11px;">${new Date(s.settled_at).toLocaleDateString('ja-JP')}</div></div></div><div class="expense-right"><b style="font-size: 15px; font-variant-numeric:tabular-nums;">${yen(s.amount)}</b><br><button class="undo-settle ghost" data-id="${s.id}" style="color:#C9465E; padding:3px 9px; font-size:11px; margin-top:4px; border-radius:7px;">取り消す</button></div></div>`).join('') || '<p class="muted" style="text-align:center; padding:16px 0;">まだ精算履歴はありません</p>'}
+
+        <div class="card list-card">
+          <div class="list-card-header">
+            <h2>タイムライン</h2>
+            <span class="muted" style="font-size:10.5px; white-space:nowrap;">🧾🎙️🪄タップで詳細</span>
+          </div>
+          <div class="list-card-body">
+            ${timelineHtml}
+          </div>
+        </div>
+
+        <div class="card list-card">
+          <div class="list-card-header">
+            <h2>精算履歴</h2>
+            <span class="muted" style="font-size:11px;">${filteredSettlements.length}件</span>
+          </div>
+          <div class="list-card-body" style="max-height: 36vh;">
+            ${filteredSettlements.map(s => `<div class="expense"><div class="expense-left"><div class="cat-avatar" style="background:#EBF7F2; color:#1F6E50; border-color:#D2EFE3;">✓</div><div><b class="break-text" style="font-size:14px;">${esc(name(s.from_user_id))} → ${esc(name(s.to_user_id))}</b><div class="muted" style="font-size:11px;">${new Date(s.settled_at).toLocaleDateString('ja-JP')}</div></div></div><div class="expense-right"><b style="font-size: 15px; font-variant-numeric:tabular-nums;">${yen(s.amount)}</b><br><button class="undo-settle ghost" data-id="${s.id}" style="color:#C43E57; padding:3px 9px; font-size:11px; margin-top:4px; border-radius:7px;">取り消す</button></div></div>`).join('') || '<p class="muted" style="text-align:center; padding:20px 0;">まだ精算履歴はありません</p>'}
+          </div>
         </div>
       </section>
 
       <!-- サブ機能①：🍳 今日のAI献立提案 -->
       <section id="sec-recipe" style="display: none;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
-          <h2 style="margin: 0; font-size: 18px;">🍳 冷蔵庫からAI献立提案</h2>
+        <div class="section-head">
+          <h2 class="section-title">🍳 AI献立提案</h2>
         </div>
-        <div class="card">
-          <label class="muted">家にある食材・使いたいもの</label>
-          <input id="recipeIngredients" class="field" placeholder="例：豚肉、キャベツ、卵、豆腐" style="margin-top: 6px;">
+        <div class="card" style="margin-top: 0;">
+          <label class="field-label">家にある食材・使いたいもの</label>
+          <input id="recipeIngredients" class="field" placeholder="例：豚肉、キャベツ、卵、豆腐">
 
-          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
-            <button id="btnRecipePhoto" class="ghost" style="font-size: 12px; padding: 8px 12px; background: #fff7f0; color: #b56331; border-radius: 10px; font-weight: bold;">📷 冷蔵庫・食材を撮影</button>
-            <span id="recipePhotoStatus" class="muted" style="font-size: 12px;">${recipeImageBase64 ? '✅ 写真セット済み' : '写真なしでもOK'}</span>
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+            <button id="btnRecipePhoto" class="ghost" style="font-size: 12px; padding: 8px 13px; border-radius: 10px; white-space: nowrap;">📷 食材を撮影</button>
+            <span id="recipePhotoStatus" class="muted" style="font-size: 11.5px;">${recipeImageBase64 ? '写真セット済み' : '写真なしでもOK'}</span>
             <input type="file" id="recipePhotoInput" accept="image/*" style="display:none;">
           </div>
 
-          <label class="muted" style="display:block; margin-bottom: 6px;">今日の気分</label>
-          <div style="margin-bottom: 15px;">
+          <label class="field-label" style="margin-bottom: 8px;">今日の気分</label>
+          <div style="margin-bottom: 16px;">
             ${['時短・簡単', 'ガッツリ満腹', 'ヘルシー', 'おつまみ・晩酌', '節約レシピ'].map(m => `<span class="chip-btn recipe-mood-chip ${recipeMood === m ? 'selected' : ''}" data-mood="${m}">${m}</span>`).join('')}
           </div>
 
-          <button id="btnGenerateRecipe" class="primary full" style="padding: 14px; font-size: 15px;">🍳 AIに3品提案してもらう</button>
+          <button id="btnGenerateRecipe" class="primary full" style="padding: 13px; font-size: 14px;">AIに3品提案してもらう</button>
         </div>
 
         <div id="recipeResultWrap" class="card" style="display: ${lastRecipeHtml ? 'block' : 'none'};">
-          <h2 style="margin-top: 0;">AIのおすすめ献立</h2>
+          <h2>AIのおすすめ献立</h2>
           <div id="recipeResultContent">${lastRecipeHtml}</div>
         </div>
       </section>
 
-      <!-- サブ機能⑧：🎟️ ご褒美・おねだりチケット -->
+      <!-- サブ機能②：🎟️ ご褒美・おねだりチケット -->
       <section id="sec-tickets" style="display: none;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
-          <h2 style="margin: 0; font-size: 18px;">🎟️ ご褒美・おねだりチケット</h2>
+        <div class="section-head">
+          <h2 class="section-title">🎟️ ご褒美チケット</h2>
         </div>
 
-        <div class="card" style="background: #fffafb; border: 1px solid #f0dfe4;">
-          <h2 style="margin-top: 0;">チケットを発行する</h2>
-          <label class="muted" style="display:block; margin-bottom: 6px;">定番から選ぶ</label>
+        <div class="card" style="margin-top: 0;">
+          <h2>チケットを発行する</h2>
+          <label class="field-label" style="margin-bottom: 8px;">定番から選ぶ</label>
           <div style="margin-bottom: 10px;">
-            ${['☕ カフェ奢り券', '🚗 運転交代パス券', '🍳 好きな料理リクエスト券', '🍦 アイス買ってもらえる券', '💆 肩もみ10分券'].map(t => `<span class="chip-btn ticket-preset-chip" data-title="${t}">${t}</span>`).join('')}
+            ${['☕ カフェ奢り券', '🚗 運転交代パス券', '🍳 料理リクエスト券', '🍦 アイス奢り券', '💆 肩もみ10分券'].map(t => `<span class="chip-btn ticket-preset-chip" data-title="${t}">${t}</span>`).join('')}
           </div>
           <input id="ticketTitle" class="field" placeholder="チケット名 (例: スタバ新作奢り券)">
-          <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
-            <span class="muted" style="font-size: 12px; font-weight: bold; white-space: nowrap;">使える人：</span>
+          <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 14px;">
+            <span class="field-label" style="white-space: nowrap;">使える人</span>
             <select id="ticketHolder" class="field" style="margin: 0; flex: 1;">
               ${members.map(m => `<option value="${m.user_id}" ${m.user_id !== uid ? 'selected' : ''}>${esc(name(m.user_id))} が使える券</option>`).join('')}
             </select>
           </div>
-          <button id="btnAddTicket" class="primary full" style="padding: 12px;">🎟️ チケットを発行！</button>
+          <button id="btnAddTicket" class="primary full" style="padding: 12px;">チケットを発行する</button>
         </div>
 
         <div class="card">
-          <h2 style="margin-top: 0;">使えるチケット (${activeTickets.length}枚)</h2>
+          <h2>使えるチケット (${activeTickets.length}枚)</h2>
           ${activeTickets.map((t: any) => `
             <div class="ticket-card">
-              <div>
-                <div style="font-weight: 800; font-size: 15px; color: #3e3438;">${esc(t.title)}</div>
-                <div class="muted" style="font-size: 12px; margin-top: 4px;">所有者: <b style="color:#e7617d;">${esc(name(t.holder))}</b> (${esc(t.createdAt)})</div>
+              <div style="min-width: 0; flex: 1;">
+                <div style="font-weight: 800; font-size: 14.5px; color: #211C1F;">${esc(t.title)}</div>
+                <div class="muted" style="font-size: 11.5px; margin-top: 3px;">所有者: <b style="color:#E2556F;">${esc(name(t.holder))}</b> · ${esc(t.createdAt)}</div>
               </div>
-              <div style="display: flex; gap: 6px;">
-                <button class="use-ticket-btn primary" data-id="${t.id}" style="padding: 8px 14px; font-size: 12px; border-radius: 12px;">✨ 使う</button>
-                <button class="del-ticket-btn ghost" data-id="${t.id}" style="padding: 8px 10px; font-size: 11px; color: #b5a6ac;">×</button>
+              <div style="display: flex; gap: 6px; flex-shrink: 0;">
+                <button class="use-ticket-btn primary" data-id="${t.id}" style="padding: 8px 13px; font-size: 12px; border-radius: 10px;">使う</button>
+                <button class="del-ticket-btn ghost" data-id="${t.id}" style="padding: 8px 10px; font-size: 12px; color: #988D93;">×</button>
               </div>
             </div>
-          `).join('') || '<p class="muted" style="text-align: center; padding: 15px 0;">まだ未使用のチケットはありません</p>'}
+          `).join('') || '<p class="muted" style="text-align: center; padding: 16px 0;">未使用のチケットはありません</p>'}
         </div>
 
         ${usedTickets.length > 0 ? `
           <div class="card">
-            <h2 style="margin-top: 0; font-size: 15px; color: #9b8d93;">使用済みチケット履歴</h2>
+            <h2 style="color: #988D93;">使用済み履歴</h2>
             ${usedTickets.slice().reverse().slice(0, 10).map((t: any) => `
-              <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 0; border-bottom: 1px solid #f5e9ed; font-size: 13px; color: #9b8d93;">
+              <div style="display:flex; justify-content:space-between; align-items:center; padding: 9px 0; border-bottom: 1px solid #EDE8EB; font-size: 12.5px; color: #988D93;">
                 <div><del>${esc(t.title)}</del> (${esc(name(t.holder))})</div>
-                <div style="font-size: 11px;">使用済: ${esc(t.usedAt || '')}</div>
+                <div style="font-size: 11px;">${esc(t.usedAt || '')}</div>
               </div>
             `).join('')}
           </div>
         ` : ''}
       </section>
 
-      <!-- サブ機能②：🎮 待ち時間ミニゲーム（2台オンライン同時接続＆1台対戦両対応） -->
+      <!-- サブ機能③：🎮 ふたりでミニゲーム（1台で遊べる7種パーティーゲーム） -->
       <section id="sec-minigame" style="display: none;">
-        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; margin-top: 10px;">
-          <h2 style="margin: 0; font-size: 17px; white-space: nowrap;">🎮 オンライン対戦</h2>
-          <span class="partner-online-badge" style="font-size:11px; font-weight:700; padding:4px 10px; border-radius:999px; border:1px solid #EFE9EC; background:#F7F4F6; color:#9A8E94; display:inline-flex; align-items:center; white-space:nowrap; flex-shrink:0;"></span>
+        <div class="section-head">
+          <h2 class="section-title">🎮 ふたりでミニゲーム</h2>
         </div>
-        <p class="muted" style="margin-top:0; margin-bottom:10px; font-size:11px;">2人それぞれのスマホで開くとリアルタイム通信対戦！1台のスマホを交互に触っても遊べます。</p>
         
-        <div style="display: flex; gap: 6px; margin-bottom: 14px; overflow-x: auto; padding-bottom: 4px;">
+        <div style="display: flex; gap: 6px; margin-bottom: 12px; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch;">
           <button id="btnGameSync" class="sched-mode-btn ${miniGameMode === 'sync' ? 'active' : 'inactive'}">💞 以心伝心</button>
           <button id="btnGameTimer" class="sched-mode-btn ${miniGameMode === 'timer' ? 'active' : 'inactive'}">⏱️ 10秒止め</button>
           <button id="btnGameBalloon" class="sched-mode-btn ${miniGameMode === 'balloon' ? 'active' : 'inactive'}">🎈 風船</button>
@@ -1661,117 +1291,112 @@ async function render(isInitial = false) {
           <button id="btnGameReact" class="sched-mode-btn ${miniGameMode === 'react' ? 'active' : 'inactive'}">⚡ 反射神経</button>
         </div>
 
-        <!-- ゲーム①（新）：💞 以心伝心チャレンジ（AIシンクロ採点） -->
-        <div id="wrapGameSync" class="card" style="padding: 16px; display: ${miniGameMode === 'sync' ? 'block' : 'none'};">
+        <div id="wrapGameSync" class="card" style="display: ${miniGameMode === 'sync' ? 'block' : 'none'};">
           <div id="syncGameArea"></div>
         </div>
 
-        <!-- ゲーム②（新）：⏱️ 体内時計10.00秒ピタリ止めバトル -->
-        <div id="wrapGameTimer" class="card" style="padding: 16px; text-align: center; display: ${miniGameMode === 'timer' ? 'block' : 'none'};">
+        <div id="wrapGameTimer" class="card" style="text-align: center; display: ${miniGameMode === 'timer' ? 'block' : 'none'};">
           <div id="timerGameArea"></div>
         </div>
 
-        <!-- ゲーム③（新）：🎈 風船チキンレース -->
-        <div id="wrapGameBalloon" class="card" style="padding: 16px; text-align: center; display: ${miniGameMode === 'balloon' ? 'block' : 'none'};">
+        <div id="wrapGameBalloon" class="card" style="text-align: center; display: ${miniGameMode === 'balloon' ? 'block' : 'none'};">
           <div id="balloonGameArea"></div>
         </div>
 
-        <!-- ゲーム④（新）：⭕ 消えるマルバツゲーム -->
-        <div id="wrapGameTtt" class="card" style="padding: 16px; text-align: center; display: ${miniGameMode === 'ttt' ? 'block' : 'none'};">
+        <div id="wrapGameTtt" class="card" style="text-align: center; display: ${miniGameMode === 'ttt' ? 'block' : 'none'};">
           <div id="tttGameArea"></div>
         </div>
 
-        <div id="wrapGameReact" class="card" style="padding: 12px; text-align: center; display: ${miniGameMode === 'react' ? 'block' : 'none'};">
-          <div style="display:flex; justify-content:space-around; margin-bottom:12px; font-weight:bold; font-size:15px;">
-            <span style="color:#5995bd;">${esc(partnerName)}: <span id="reactScoreP2" style="font-size:20px;">${reactScoreP2}</span> 点</span>
-            <span style="color:#e7617d;">${esc(myName)}: <span id="reactScoreP1" style="font-size:20px;">${reactScoreP1}</span> 点</span>
+        <div id="wrapGameReact" class="card" style="padding: 14px; text-align: center; display: ${miniGameMode === 'react' ? 'block' : 'none'};">
+          <div style="display:flex; justify-content:space-around; margin-bottom:12px; font-weight:800; font-size:14px;">
+            <span style="color:#4A7FA7;">${esc(partnerName)}: <span id="reactScoreP2" style="font-size:19px;">${reactScoreP2}</span></span>
+            <span style="color:#E2556F;">${esc(myName)}: <span id="reactScoreP1" style="font-size:19px;">${reactScoreP1}</span></span>
           </div>
-          <div style="display:flex; flex-direction:column; height:320px; border-radius:16px; overflow:hidden; border:2px solid #f0dfe4; position:relative;">
-            <button id="reactBtnP2" style="flex:1; border:none; background:#f0f4f8; font-size:18px; font-weight:bold; color:#5995bd; transform:rotate(180deg); display:flex; align-items:center; justify-content:center; cursor:pointer; user-select:none;">タップしてね (3点先取)</button>
-            <div id="reactStatus" style="height:44px; background:#3e3438; color:#fff; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:bold; letter-spacing:1px;">スタートを押してね</div>
-            <button id="reactBtnP1" style="flex:1; border:none; background:#fff0f3; font-size:18px; font-weight:bold; color:#e7617d; display:flex; align-items:center; justify-content:center; cursor:pointer; user-select:none;">タップしてね (3点先取)</button>
+          <div style="display:flex; flex-direction:column; height:300px; border-radius:16px; overflow:hidden; border:1px solid #EDE8EB; position:relative;">
+            <button id="reactBtnP2" style="flex:1; border:none; border-radius:0; background:#F2F6FA; font-size:16px; font-weight:800; color:#4A7FA7; transform:rotate(180deg); display:flex; align-items:center; justify-content:center; cursor:pointer;">タップ (3点先取)</button>
+            <div id="reactStatus" style="height:44px; background:#211C1F; color:#fff; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:800;">スタートを押してね</div>
+            <button id="reactBtnP1" style="flex:1; border:none; border-radius:0; background:#FCF4F6; font-size:16px; font-weight:800; color:#E2556F; display:flex; align-items:center; justify-content:center; cursor:pointer;">タップ (3点先取)</button>
           </div>
-          <button id="reactStartBtn" class="primary full" style="margin-top:14px; padding:12px; font-size:16px;">対戦スタート！</button>
+          <button id="reactStartBtn" class="primary full" style="margin-top:12px; padding:12px;">対戦スタート</button>
         </div>
 
-        <div id="wrapGameBomb" class="card" style="text-align:center; padding: 20px 15px; display: ${miniGameMode === 'bomb' ? 'block' : 'none'};">
-          <div id="bombMsg" style="font-weight:bold; color:#a76777; margin-bottom:15px; font-size:16px;">交互にタップ！ハズレ(💣)で負け！</div>
-          <div id="bombGrid" style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; margin-bottom:20px;"></div>
+        <div id="wrapGameBomb" class="card" style="text-align:center; display: ${miniGameMode === 'bomb' ? 'block' : 'none'};">
+          <div id="bombMsg" style="font-weight:800; color:#211C1F; margin-bottom:14px; font-size:15px;">交互にタップ！ハズレ(💣)で負け</div>
+          <div id="bombGrid" style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-bottom:16px;"></div>
           <button id="bombResetBtn" class="dark full" style="padding:12px;">新しく始める</button>
         </div>
 
-        <!-- ★ 2人同時回答＆スコアリセット対応のAIクイズ -->
-        <div id="wrapGameQuiz" class="card" style="padding: 16px; display: ${miniGameMode === 'quiz' ? 'block' : 'none'};">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; background:#fffafb; padding:10px 14px; border-radius:12px; border:1px solid #f0dfe4;">
+        <div id="wrapGameQuiz" class="card" style="display: ${miniGameMode === 'quiz' ? 'block' : 'none'};">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; background:#F7F4F6; padding:10px 14px; border-radius:14px; border:1px solid #EDE8EB;">
             <div style="text-align:center;">
-              <div style="font-size:12px; color:#5995bd; font-weight:bold;">${esc(partnerName)}</div>
-              <b id="quizScoreP2Label" style="font-size:20px; color:#5995bd;">${quizScoreP2}点</b>
+              <div style="font-size:11px; color:#4A7FA7; font-weight:700;">${esc(partnerName)}</div>
+              <b id="quizScoreP2Label" style="font-size:19px; color:#4A7FA7;">${quizScoreP2}点</b>
+            </div>
+            <div>
+              <button id="btnQuizResetScore" class="ghost" style="padding:6px 12px; font-size:11px; border-radius:999px; background:#fff;">0点に戻す</button>
             </div>
             <div style="text-align:center;">
-              <button id="btnQuizResetScore" class="ghost" style="padding:6px 12px; font-size:11px; border-radius:8px; color:#9b8d93; font-weight:bold;">🔄 0点に戻す</button>
-            </div>
-            <div style="text-align:center;">
-              <div style="font-size:12px; color:#e7617d; font-weight:bold;">${esc(myName)}</div>
-              <b id="quizScoreP1Label" style="font-size:20px; color:#e7617d;">${quizScoreP1}点</b>
+              <div style="font-size:11px; color:#E2556F; font-weight:700;">${esc(myName)}</div>
+              <b id="quizScoreP1Label" style="font-size:19px; color:#E2556F;">${quizScoreP1}点</b>
             </div>
           </div>
 
-          <label class="muted" style="font-size:12px;">クイズのテーマ（自由入力OK）</label>
-          <div style="margin: 6px 0;">
+          <label class="field-label" style="margin-bottom:6px;">テーマ</label>
+          <div style="margin-bottom: 8px;">
             ${['テーマパーク雑学', 'K-POP', '平成レトロ', 'グルメ・料理', 'ドライブ・地理', '動物雑学'].map(t => `<span class="chip-btn quiz-theme-chip" data-theme="${t}">${t}</span>`).join('')}
           </div>
           <div style="display:flex; gap:6px; margin-bottom:12px;">
-            <input id="quizThemeInput" class="field" placeholder="例: ディズニー、TWICE、雑学" value="テーマパーク雑学" style="margin:0; flex:1;">
-            <select id="quizDiffSelect" class="field" style="margin:0; width:105px;">
+            <input id="quizThemeInput" class="field" placeholder="例: ディズニー、雑学" value="テーマパーク雑学" style="margin:0; flex:1; min-width:0;">
+            <select id="quizDiffSelect" class="field" style="margin:0; width:104px; flex-shrink:0;">
               <option value="やさしい">やさしい</option>
               <option value="ふつう" selected>ふつう</option>
               <option value="マニアック">マニアック</option>
             </select>
           </div>
-          <button id="btnGenerateQuiz" class="primary full" style="padding:12px; font-size:15px;">🎲 AIでクイズを出題！(相手の画面にも同期)</button>
+          <button id="btnGenerateQuiz" class="primary full" style="padding:12px;">AIでクイズを出題する</button>
 
-          <div id="quizPlayArea" style="margin-top: 16px;"></div>
+          <div id="quizPlayArea" style="margin-top: 14px;"></div>
         </div>
       </section>
 
-      <!-- サブ機能：📅 ふたりの予定 -->
+      <!-- サブ機能④：📅 ふたりの予定 -->
       <section id="sec-schedule">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
-          <h2 style="margin: 0; font-size: 18px;">📅 ふたりの予定</h2>
+        <div class="section-head">
+          <h2 class="section-title">📅 ふたりの予定</h2>
         </div>
         
-        <div class="card" style="background: #fffafb; border: 1px solid #f0dfe4;">
+        <div class="card" style="margin-top: 0;">
           <h2>新しい予定を登録</h2>
-          <input id="schedTitle" class="field" placeholder="予定 (例: ディズニー旅行)" style="margin-bottom: 15px;">
+          <input id="schedTitle" class="field" placeholder="予定 (例: ディズニー旅行)">
           
-          <div style="display:flex; gap:8px; margin-bottom: 15px;">
-             <button id="btnModeMulti" class="sched-mode-btn active">📅 カレンダーで複数日</button>
+          <div style="display:flex; gap:6px; margin-bottom: 14px;">
+             <button id="btnModeMulti" class="sched-mode-btn active">カレンダー選択</button>
              <button id="btnModeSpan" class="sched-mode-btn inactive">期間・繰り返し</button>
           </div>
 
           <div id="wrapMulti">
-            <div style="display:flex; justify-content:space-between; align-items:center; background:#fff; padding:6px 12px; border-radius:12px; border:1px solid #f0dfe4;">
-               <button id="calPrev" class="ghost" style="padding:4px 12px; font-size:16px;">◀</button>
-               <span id="schedCalMonthLabel" style="font-weight:bold; color:#e7617d;"></span>
-               <button id="calNext" class="ghost" style="padding:4px 12px; font-size:16px;">▶</button>
+            <div style="display:flex; justify-content:space-between; align-items:center; background:#F7F4F6; padding:6px 10px; border-radius:12px; border:1px solid #EDE8EB;">
+               <button id="calPrev" class="ghost" style="padding:4px 12px; font-size:14px; background:#fff;">◀</button>
+               <span id="schedCalMonthLabel" style="font-weight:800; color:#211C1F; font-size:14px;"></span>
+               <button id="calNext" class="ghost" style="padding:4px 12px; font-size:14px; background:#fff;">▶</button>
             </div>
-            <div style="display:grid; grid-template-columns:repeat(7,1fr); text-align:center; font-size:11px; margin-top:10px; font-weight:bold;" class="muted">
-               <div style="color:#bf4f68;">日</div><div>月</div><div>火</div><div>水</div><div>木</div><div>金</div><div style="color:#7ab8e6;">土</div>
+            <div style="display:grid; grid-template-columns:repeat(7,1fr); text-align:center; font-size:11px; margin-top:10px; font-weight:700;" class="muted">
+               <div style="color:#E2556F;">日</div><div>月</div><div>火</div><div>水</div><div>木</div><div>金</div><div style="color:#4A7FA7;">土</div>
             </div>
-            <div id="schedCalGrid" style="display:grid; grid-template-columns:repeat(7,1fr); gap:6px; margin-top:6px; padding-bottom:10px;"></div>
+            <div id="schedCalGrid" style="display:grid; grid-template-columns:repeat(7,1fr); gap:5px; margin-top:6px; padding-bottom:10px;"></div>
           </div>
 
           <div id="wrapSpan" class="hide">
             <div style="display:flex; gap:8px; align-items: center; margin-bottom: 8px;">
-              <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">開始</span>
+              <span class="field-label" style="width: 34px;">開始</span>
               <input id="schedStartDate" type="date" class="field" style="margin:0; flex:1;" value="${getToday()}">
             </div>
             <div style="display:flex; gap:8px; align-items: center; margin-bottom: 8px;">
-              <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">終了</span>
+              <span class="field-label" style="width: 34px;">終了</span>
               <input id="schedEndDate" type="date" class="field" style="margin:0; flex:1;" value="${getToday()}">
             </div>
             <div style="display:flex; gap:8px; align-items: center; margin-bottom: 10px;">
-              <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">繰返</span>
+              <span class="field-label" style="width: 34px;">繰返</span>
               <select id="schedRecurrence" class="field" style="margin:0; flex:1;">
                 <option value="none">繰り返さない</option>
                 <option value="daily">毎日</option>
@@ -1782,134 +1407,142 @@ async function render(isInitial = false) {
             </div>
           </div>
 
-          <div style="border-top: 1px solid #f0dfe4; margin: 15px 0;"></div>
+          <div style="border-top: 1px solid #EDE8EB; margin: 14px 0;"></div>
           
-          <div style="display:flex; gap:8px; align-items: center; margin-bottom: 15px;">
-            <span style="font-size: 12px; font-weight:bold; color:#a76777; width: 35px;">時間</span>
+          <div style="display:flex; gap:8px; align-items: center; margin-bottom: 14px;">
+            <span class="field-label" style="width: 34px;">時間</span>
             <input id="schedStartTime" type="time" class="field" style="margin:0; flex:1;">
-            <span style="color:#a76777; font-weight:bold;">〜</span>
+            <span class="muted">〜</span>
             <input id="schedEndTime" type="time" style="margin:0; flex:1;" class="field">
           </div>
 
-          <button id="addSchedBtn" class="primary full" style="padding: 14px;">リストに追加</button>
+          <button id="addSchedBtn" class="primary full" style="padding: 13px;">予定を追加する</button>
         </div>
 
-        <div class="card history-scroll">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <h2 style="margin: 0;">今後の予定</h2>
-            <button id="exportAllSchedBtn" class="ghost" style="padding: 6px 12px; font-size: 12px; font-weight: bold; border-radius: 8px;">📥 すべて書き出す</button>
+        <div class="card list-card">
+          <div class="list-card-header">
+            <h2>今後の予定</h2>
+            <button id="exportAllSchedBtn" class="ghost" style="padding: 6px 11px; font-size: 11.5px; border-radius: 9px; white-space: nowrap;">📥 カレンダー書き出し</button>
           </div>
-          <p class="muted" style="margin-top:8px;">「すべて書き出す」で、スマホのカレンダーに一括で登録できます（重複しません）。</p>
-          ${schedules.slice().sort((a:any, b:any) => a.startDate.localeCompare(b.startDate)).map((s:any) => {
-            let displayTime = s.startDate.replace(/-/g, '/');
-            if (s.startTime) displayTime += ` ${s.startTime}`;
-            if (s.endDate && s.endDate !== s.startDate) {
-              displayTime += ` 〜 ${s.endDate.replace(/-/g, '/')}`;
-              if (s.endTime) displayTime += ` ${s.endTime}`;
-            } else if (s.endTime) {
-              displayTime += ` 〜 ${s.endTime}`;
-            }
-            
-            let recurText = '';
-            if (s.recurrence === 'daily') recurText = ' <span style="background:#fff0f3; color:#a76777; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:bold;">毎日</span>';
-            if (s.recurrence === 'weekly') recurText = ' <span style="background:#fff0f3; color:#a76777; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:bold;">毎週</span>';
-            if (s.recurrence === 'monthly') recurText = ' <span style="background:#fff0f3; color:#a76777; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:bold;">毎月</span>';
-            if (s.recurrence === 'yearly') recurText = ' <span style="background:#fff0f3; color:#a76777; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:bold;">毎年</span>';
-
-            return `
-            <div style="padding: 14px 0; border-bottom: 1px solid #f5e9ed;">
-              <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-                <div>
-                  <b style="font-size: 16px; color:#e7617d;">${esc(s.title)}${recurText}</b>
-                  <div class="muted" style="font-weight:bold; margin-top:4px;">${displayTime}</div>
+          <div class="list-card-body">
+            ${schedules.slice().sort((a:any, b:any) => a.startDate.localeCompare(b.startDate)).map((s:any) => {
+              let displayTime = s.startDate.replace(/-/g, '/');
+              if (s.startTime) displayTime += ` ${s.startTime}`;
+              if (s.endDate && s.endDate !== s.startDate) {
+                displayTime += ` 〜 ${s.endDate.replace(/-/g, '/')}`;
+                if (s.endTime) displayTime += ` ${s.endTime}`;
+              } else if (s.endTime) {
+                displayTime += ` 〜 ${s.endTime}`;
+              }
+              let recurText = '';
+              if (s.recurrence === 'daily') recurText = ' <span style="background:#FCEEF1; color:#C43E57; padding:2px 7px; border-radius:6px; font-size:10px; font-weight:700;">毎日</span>';
+              if (s.recurrence === 'weekly') recurText = ' <span style="background:#FCEEF1; color:#C43E57; padding:2px 7px; border-radius:6px; font-size:10px; font-weight:700;">毎週</span>';
+              if (s.recurrence === 'monthly') recurText = ' <span style="background:#FCEEF1; color:#C43E57; padding:2px 7px; border-radius:6px; font-size:10px; font-weight:700;">毎月</span>';
+              if (s.recurrence === 'yearly') recurText = ' <span style="background:#FCEEF1; color:#C43E57; padding:2px 7px; border-radius:6px; font-size:10px; font-weight:700;">毎年</span>';
+              return `
+              <div style="padding: 12px 0; border-bottom: 1px solid #EDE8EB; display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                <div style="min-width:0; flex:1;">
+                  <b style="font-size: 14.5px; color:#211C1F;">${esc(s.title)}${recurText}</b>
+                  <div class="muted" style="font-size:11.5px; margin-top:3px;">${displayTime}</div>
                 </div>
-                <button class="del-sched ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:11px; border-radius:6px; background:transparent;">削除</button>
+                <button class="del-sched ghost" data-id="${s.id}" style="color:#C43E57; padding:5px 10px; font-size:11px; border-radius:8px; flex-shrink:0;">削除</button>
               </div>
-            </div>
-          `}).join('') || '<p class="muted" style="text-align:center; padding:10px 0;">まだ予定はありません</p>'}
+            `}).join('') || '<p class="muted" style="text-align:center; padding:20px 0;">まだ予定はありません</p>'}
+          </div>
         </div>
       </section>
 
-      <!-- サブ機能：💧 水道・光熱費 -->
+      <!-- サブ機能⑤：💧 水道・光熱費 -->
       <section id="sec-utilities">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 10px;">
-          <button id="closeUtils" class="ghost" style="padding: 10px 14px; visibility: hidden;">戻る</button>
-          <h2 style="margin: 0; font-size: 18px;">💧 水道・光熱費</h2>
-          <div style="width: 60px;"></div>
+        <div class="section-head">
+          <h2 class="section-title">💧 水道・光熱費</h2>
+          <button id="utilModeToggle" class="ghost" style="padding: 7px 12px; font-size: 11.5px; border-radius: 999px; white-space: nowrap;">${utilViewMode === 'trend' ? '平均を見る ⇄' : 'グラフを見る ⇄'}</button>
         </div>
-        <div class="card">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-            <div class="muted">推移・平均</div>
-            <button id="utilModeToggle" class="ghost" style="padding: 6px 12px; font-size: 12px; border-radius: 8px; font-weight: bold;">${utilViewMode === 'trend' ? '平均を見る ⇄' : 'グラフを見る ⇄'}</button>
-          </div>
+        <div class="card" style="margin-top: 0;">
+          <div class="muted" style="margin-bottom: 10px; font-size: 11.5px; font-weight: 700;">月別推移・平均レポート</div>
           ${graphHtml}
         </div>
         <div class="card">
           <h2>記録を追加</h2>
-          <div style="display: flex; gap: 6px; margin-top: 10px;">
+          <div style="display: flex; gap: 6px; margin-top: 8px;">
             <input type="month" id="utilMonth" class="field" style="margin:0; flex:1;" value="${new Date().toISOString().slice(0,7)}">
-            <select id="utilType" class="field" style="margin:0; width: 110px;">
+            <select id="utilType" class="field" style="margin:0; width: 108px;">
               <option value="water">水道代</option><option value="energy">光熱費</option>
             </select>
           </div>
           <input type="number" id="utilAmount" class="field" placeholder="金額を入力" style="margin-top: 10px;">
           <button id="addUtilBtn" class="dark full">追加する</button>
         </div>
-        <div class="card history-scroll">
-          <h2>履歴</h2>
-          ${utils.slice().reverse().map((u:any) => `<div style="display:flex; justify-content:space-between; align-items:center; padding: 12px 0; border-bottom:1px solid #f5e9ed;"><div><b style="font-size:15px; color:${u.type==='water'?'#5995bd':'#d88c5f'}">${u.type === 'water' ? '水道代' : '光熱費'}</b><div class="muted" style="font-size:12px; margin-top: 2px;">${u.month}</div></div><div style="text-align:right;"><b style="font-size: 16px;">${yen(u.amount)}</b><br><button class="del-util ghost" data-id="${u.id}" style="color:#bf4f68; padding:4px 10px; font-size:11px; margin-top:6px; border-radius:6px;">削除</button></div></div>`).join('') || '<p class="muted" style="text-align:center; padding:10px 0;">まだありません</p>'}
+        <div class="card list-card">
+          <div class="list-card-header">
+            <h2>記録一覧</h2>
+            <span class="muted" style="font-size:11px;">${utils.length}件</span>
+          </div>
+          <div class="list-card-body">
+            ${utils.slice().reverse().map((u:any) => `<div class="expense"><div class="expense-left"><div class="cat-avatar" style="background:${u.type==='water'?'#EEF6FF':'#FFF4EB'}; border-color:${u.type==='water'?'#D5E7FA':'#F8DFCA'};">${u.type==='water'?'💧':'⚡'}</div><div><b style="font-size:14px; color:#211C1F;">${u.type === 'water' ? '水道代' : '光熱費'}</b><div class="muted" style="font-size:11.5px; margin-top: 2px;">${u.month}</div></div></div><div class="expense-right"><b style="font-size: 15px; font-variant-numeric:tabular-nums;">${yen(u.amount)}</b><br><button class="del-util ghost" data-id="${u.id}" style="color:#C43E57; padding:3px 9px; font-size:11px; margin-top:4px; border-radius:7px;">削除</button></div></div>`).join('') || '<p class="muted" style="text-align:center; padding:20px 0;">まだ記録はありません</p>'}
+          </div>
         </div>
       </section>
 
-      <!-- メイン④：設定タブ -->
+      <!-- メイン④：設定タブ（iOS設定アプリ風の洗練されたグループ設計） -->
       <section id="sec-settings">
-        <div class="card" style="margin-top: 20px;">
-          <h2>招待コード</h2>
-          <div class="big" style="color: #e7617d;">${esc(inviteCode)}</div><p class="muted">${members.length}/2人</p>
+        <div class="section-head">
+          <h2 class="section-title">設定</h2>
+        </div>
+
+        <div class="card" style="margin-top: 0;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <h2 style="margin:0;">ペア・招待コード</h2>
+            <span style="font-size:11px; font-weight:700; padding:3px 9px; border-radius:999px; background:#F7F4F6; color:#665C62; border:1px solid #EDE8EB;">メンバー ${members.length}/2人</span>
+          </div>
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:#F7F4F6; border:1px solid #EDE8EB; border-radius:14px; padding:12px 14px;">
+            <div style="font-size:24px; font-weight:800; letter-spacing:0.12em; color:#211C1F; font-variant-numeric:tabular-nums;">${esc(inviteCode || '------')}</div>
+            <button id="copyInviteBtn" type="button" class="ghost" style="background:#fff; color:#211C1F; padding:7px 13px; font-size:12px; border-radius:10px; white-space:nowrap; flex-shrink:0;">コピー</button>
+          </div>
         </div>
 
         <div class="card">
           <h2>サブスク・定額の管理</h2>
-          <p class="muted" style="font-size:12px; margin-top:0;">指定日の0時以降に自動追加されます。「月末」を選ぶと30日や28日の月も自動で末日に調整されます。</p>
+          <p class="muted" style="font-size:11.5px; margin-top:-4px; margin-bottom:12px;">指定日の0時以降に自動追加されます。「月末」は30日・28日の月も自動調整します。</p>
           <div id="subsList" style="margin-bottom: 12px;">
-            ${subs.map((s:any) => `<div style="display:flex; justify-content:space-between; align-items:center; padding: 10px 0; border-bottom:1px solid #f5e9ed;"><div><b style="font-size:14px;">${esc(s.title)}</b><br><span class="muted" style="font-size:12px;">${yen(s.amount)} (毎月${fmtSubDate(s.date)} / 支払: ${esc(name(s.payer_id))})</span></div><button class="del-sub ghost" data-id="${s.id}" style="color:#bf4f68; padding:6px 10px; font-size:12px; border-radius: 8px;">削除</button></div>`).join('') || '<p class="muted" style="text-align:center; padding: 10px 0;">登録されていません</p>'}
+            ${subs.map((s:any) => `<div style="display:flex; justify-content:space-between; align-items:center; padding: 10px 0; border-bottom:1px solid #EDE8EB; gap:8px;"><div style="min-width:0; flex:1;"><b style="font-size:14px; color:#211C1F;">${esc(s.title)}</b><div class="muted" style="font-size:11.5px; margin-top:2px;">${yen(s.amount)} · 毎月${fmtSubDate(s.date)} · ${esc(name(s.payer_id))}</div></div><button class="del-sub ghost" data-id="${s.id}" style="color:#C43E57; padding:5px 10px; font-size:11.5px; border-radius:8px; flex-shrink:0;">削除</button></div>`).join('') || '<p class="muted" style="text-align:center; padding: 10px 0;">登録されていません</p>'}
           </div>
-          <div style="background: #fffafb; padding: 12px; border-radius: 12px; border: 1px solid #f0dfe4;">
-            <label class="muted" style="font-size:12px;">新しいサブスクを登録</label>
-            <div style="display:flex; gap:6px; margin-top:4px;">
-              <input id="subTitle" class="field" placeholder="名前 (例: 家賃)" style="margin:0; flex:1;">
-              <input id="subAmount" type="number" class="field" placeholder="金額" style="margin:0; width:95px;">
+          <div class="settings-subpanel" style="margin-bottom:0;">
+            <label class="field-label" style="margin-bottom:6px;">新しいサブスクを登録</label>
+            <div style="display:flex; gap:6px;">
+              <input id="subTitle" class="field" placeholder="名前 (例: 家賃)" style="margin:0; flex:1; background:#fff; min-width:0;">
+              <input id="subAmount" type="number" class="field" placeholder="金額" style="margin:0; width:96px; background:#fff; flex-shrink:0;">
             </div>
             <div style="display:flex; gap:6px; margin-top:8px;">
-              <select id="subDate" class="field" style="margin:0; width:130px;">
+              <select id="subDate" class="field" style="margin:0; width:124px; background:#fff; flex-shrink:0;">
                 <option value="last">毎月 月末</option>
                 ${Array.from({length: 31}, (_, i) => i + 1).map(d => `<option value="${d}">毎月 ${d}日</option>`).join('')}
               </select>
-              <select id="subPayer" class="field" style="margin:0; flex:1;">
+              <select id="subPayer" class="field" style="margin:0; flex:1; background:#fff; min-width:0;">
                 ${members.map((m) => `<option value="${m.user_id}" ${m.user_id === uid ? 'selected' : ''}>${esc(name(m.user_id))}が支払う</option>`).join('')}
               </select>
             </div>
-            <button id="addSubBtn" class="dark full" style="margin-top:8px;">登録する</button>
+            <button id="addSubBtn" class="dark full" style="margin-top:10px;">登録する</button>
           </div>
         </div>
 
         <div class="card">
           <h2>プロフィール設定</h2>
-          <div style="display:flex; gap:8px; margin-top:6px; align-items:center;">
+          <div style="display:flex; gap:8px; align-items:center;">
             <input id="myName" class="field" style="margin:0; flex:1; min-width:0;" value="${esc(myName)}" placeholder="あなたの名前">
-            <button id="updateNameBtn" class="dark" style="padding:12px 16px; white-space:nowrap; flex-shrink:0;">更新</button>
+            <button id="updateNameBtn" class="dark" style="padding:11px 16px; white-space:nowrap; flex-shrink:0;">更新</button>
           </div>
         </div>
 
         <!-- 🔐 管理者モード -->
-        <div class="card" style="border: 2px solid ${isAdminMode ? '#e7617d' : '#EFE9EC'}; background: ${isAdminMode ? '#fffafb' : '#fff'};">
+        <div class="card" style="${isAdminMode ? 'border-color:#E2556F;' : ''}">
           <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
             <div style="min-width:0; flex:1;">
-              <h2 style="margin:0; font-size:16px; color:#231E21; white-space:nowrap;">🛠️ 管理者モード</h2>
-              <div class="muted" style="font-size:11px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">完全削除・部屋名変更・詳細メンテナンス</div>
+              <h2 style="margin:0; font-size:15px; color:#211C1F; white-space:nowrap;">🛠️ 管理者モード</h2>
+              <div class="muted" style="font-size:11px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">完全削除・部屋名変更・メンテナンス</div>
             </div>
-            <button id="toggleAdminModeBtn" class="${isAdminMode ? 'primary' : 'ghost'}" style="padding:8px 14px; font-size:12px; border-radius:12px; font-weight:bold; white-space:nowrap; flex-shrink:0;">
-              ${isAdminMode ? '🔓 閉じる' : '🔐 開く'}
+            <button id="toggleAdminModeBtn" class="${isAdminMode ? 'primary' : 'ghost'}" style="padding:8px 14px; font-size:12px; border-radius:10px; white-space:nowrap; flex-shrink:0;">
+              ${isAdminMode ? '閉じる' : '🔐 開く'}
             </button>
           </div>
 
@@ -1921,109 +1554,110 @@ async function render(isInitial = false) {
               .filter(e => adminFilter === 'all' ? true : (typeof e.title === 'string' && e.title.startsWith('[削除済]')));
 
             return `
-              <div style="border-top: 1px dashed #e7617d; margin-top: 14px; padding-top: 14px;">
+              <div style="border-top: 1px solid #EDE8EB; margin-top: 14px; padding-top: 14px;">
 
-                <!-- 1. 履歴の完全削除（個別選択＆削除済一括消去） -->
-                <div style="background:#fff; border:1px solid #f0dfe4; border-radius:12px; padding:12px; margin-bottom:12px;">
-                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                    <b style="font-size:14px; color:#a13c52;">🗑️ 支出データの完全削除（DBから抹消）</b>
-                    <span class="muted" style="font-size:11px;">全${expenses.length}件 (削除済:${deletedCount}件)</span>
+                <!-- 1. 履歴の完全削除 -->
+                <div class="settings-subpanel">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                    <b style="font-size:13px; color:#211C1F;">🗑️ 支出データの完全削除</b>
+                    <span class="muted" style="font-size:11px;">全${expenses.length}件 (削除済:${deletedCount})</span>
                   </div>
-                  <p class="muted" style="font-size:11px; margin-top:0; margin-bottom:8px;">通常の削除では「[削除済]」として薄く残りますが、ここから完全削除すると履歴から跡形もなく消去されます。</p>
+                  <p class="muted" style="font-size:11px; margin-top:0; margin-bottom:8px;">データベースから完全に消去します（元に戻せません）。</p>
 
-                  <div style="display:flex; gap:6px; margin-bottom:8px; flex-wrap:wrap;">
-                    <button type="button" class="admin-filter-btn ghost" data-filter="all" style="flex:1; padding:6px 10px; font-size:11px; border-radius:8px; ${adminFilter === 'all' ? 'background:#ff8fa3; color:#fff; font-weight:bold;' : ''}">すべて表示 (${expenses.length})</button>
-                    <button type="button" class="admin-filter-btn ghost" data-filter="deleted" style="flex:1; padding:6px 10px; font-size:11px; border-radius:8px; ${adminFilter === 'deleted' ? 'background:#ff8fa3; color:#fff; font-weight:bold;' : ''}">[削除済]のみ (${deletedCount})</button>
+                  <div style="display:flex; gap:6px; margin-bottom:8px;">
+                    <button type="button" class="admin-filter-btn ghost" data-filter="all" style="flex:1; padding:7px 8px; font-size:11px; border-radius:9px; ${adminFilter === 'all' ? 'background:#211C1F; color:#fff; border-color:#211C1F;' : 'background:#fff;'}">すべて (${expenses.length})</button>
+                    <button type="button" class="admin-filter-btn ghost" data-filter="deleted" style="flex:1; padding:7px 8px; font-size:11px; border-radius:9px; ${adminFilter === 'deleted' ? 'background:#211C1F; color:#fff; border-color:#211C1F;' : 'background:#fff;'}">[削除済] (${deletedCount})</button>
                   </div>
 
                   ${deletedCount > 0 ? `
-                    <button id="btnPurgeAllDeleted" type="button" class="ghost full" style="background:#ffe5e9; color:#a13c52; font-size:12px; padding:8px; border-radius:10px; font-weight:bold; margin-bottom:8px;">
-                      🧹 薄くなっている「[削除済]」(${deletedCount}件) をすべて完全消去
+                    <button id="btnPurgeAllDeleted" type="button" class="ghost full" style="background:#FCEEF1; color:#C43E57; border-color:#F1D9E0; font-size:12px; padding:9px; border-radius:10px; margin-bottom:8px;">
+                      🧹 [削除済] (${deletedCount}件) をまとめて完全消去
                     </button>
                   ` : ''}
 
-                  <div style="max-height:220px; overflow-y:auto; border:1px solid #f5e9ed; border-radius:8px; padding:4px 8px; margin-bottom:8px; background:#fffcfc;">
+                  <div style="max-height:210px; overflow-y:auto; border:1px solid #EDE8EB; border-radius:10px; padding:4px 10px; margin-bottom:8px; background:#fff;">
                     ${adminTargetExps.map(e => {
                       const isDel = typeof e.title === 'string' && e.title.startsWith('[削除済]');
                       const cleanTitle = isDel ? e.title.replace('[削除済] ', '').split('::').slice(1).join('::') : e.title;
                       const checked = adminSelectedExpIds.includes(e.id) ? 'checked' : '';
                       return `
-                        <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #f5e9ed; font-size:12px; gap:6px;">
-                          <label style="display:flex; align-items:center; gap:6px; flex:1; cursor:pointer; overflow:hidden;">
-                            <input type="checkbox" class="admin-exp-check" data-id="${e.id}" ${checked} style="width:16px; height:16px; accent-color:#e7617d;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #EDE8EB; font-size:12px; gap:6px;">
+                          <label style="display:flex; align-items:center; gap:7px; flex:1; cursor:pointer; overflow:hidden;">
+                            <input type="checkbox" class="admin-exp-check" data-id="${e.id}" ${checked} style="width:16px; height:16px; accent-color:#E2556F; flex-shrink:0;">
                             <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-                              ${isDel ? '<span style="background:#eee; color:#777; padding:1px 5px; border-radius:4px; font-size:10px;">削除済</span> ' : ''}
+                              ${isDel ? '<span class="deleted-badge">削除済</span>' : ''}
                               <b>${esc(cleanTitle)}</b>
-                              <span class="muted" style="font-size:10px;">(${esc(name(e.payer_id))}・${e.expense_date || ''})</span>
+                              <span class="muted" style="font-size:10px;">(${esc(name(e.payer_id))})</span>
                             </div>
                           </label>
-                          <div style="display:flex; align-items:center; gap:6px; white-space:nowrap;">
-                            <b style="color:${isDel ? '#999' : '#e7617d'};">${yen(e.amount)}</b>
-                            <button type="button" class="admin-hard-del-one ghost" data-id="${e.id}" style="padding:3px 8px; font-size:10px; background:#ffe5e9; color:#a13c52; border-radius:6px; font-weight:bold;">完全削除</button>
+                          <div style="display:flex; align-items:center; gap:6px; white-space:nowrap; flex-shrink:0;">
+                            <b style="color:${isDel ? '#988D93' : '#211C1F'}; font-variant-numeric:tabular-nums;">${yen(e.amount)}</b>
+                            <button type="button" class="admin-hard-del-one ghost" data-id="${e.id}" style="padding:3px 8px; font-size:10.5px; background:#FCEEF1; color:#C43E57; border-color:#F1D9E0; border-radius:6px;">消去</button>
                           </div>
                         </div>
                       `;
-                    }).join('') || '<div class="muted" style="text-align:center; padding:12px; font-size:12px;">対象の履歴がありません</div>'}
+                    }).join('') || '<div class="muted" style="text-align:center; padding:14px; font-size:12px;">対象の履歴がありません</div>'}
                   </div>
 
                   <div style="display:flex; gap:6px;">
-                    <button id="btnAdminSelectAll" type="button" class="ghost" style="padding:8px 10px; font-size:11px; border-radius:8px;">全選択/解除</button>
-                    <button id="btnAdminDeleteSelected" type="button" class="primary" style="flex:1; padding:8px 12px; font-size:12px; border-radius:8px; background:#bf4f68;">選択した項目 (${adminSelectedExpIds.length}件) を完全削除</button>
+                    <button id="btnAdminSelectAll" type="button" class="ghost" style="background:#fff; padding:8px 10px; font-size:11px; border-radius:9px; white-space:nowrap;">全選択</button>
+                    <button id="btnAdminDeleteSelected" type="button" class="primary" style="flex:1; padding:8px 12px; font-size:12px; border-radius:9px;">選択項目 (${adminSelectedExpIds.length}件) を完全削除</button>
                   </div>
                 </div>
 
-                <!-- 2. タイムラインの表示設定（削除済みログを隠す/表示する） -->
-                <div style="background:#fff; border:1px solid #f0dfe4; border-radius:12px; padding:12px; margin-bottom:12px;">
-                  <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <div>
-                      <b style="font-size:13px; color:#3e3438;">👁️ 履歴で「[削除済]」の薄いログを隠す</b>
-                      <div class="muted" style="font-size:11px;">ONにすると通常削除した項目もタイムラインに表示されません</div>
+                <!-- 2. 削除済みログ非表示 -->
+                <div class="settings-subpanel">
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                    <div style="min-width:0; flex:1;">
+                      <b style="font-size:13px; color:#211C1F;">👁️ [削除済]ログをタイムラインから隠す</b>
+                      <div class="muted" style="font-size:11px; margin-top:2px;">通常削除した薄いログを非表示にします</div>
                     </div>
-                    <button id="btnToggleHideDeleted" type="button" class="${hideDeletedInTimeline ? 'primary' : 'ghost'}" style="padding:6px 12px; font-size:12px; border-radius:10px; font-weight:bold;">
-                      ${hideDeletedInTimeline ? 'ON (非表示中)' : 'OFF (表示中)'}
+                    <button id="btnToggleHideDeleted" type="button" class="${hideDeletedInTimeline ? 'primary' : 'ghost'}" style="padding:7px 12px; font-size:11.5px; border-radius:9px; white-space:nowrap; flex-shrink:0; ${!hideDeletedInTimeline ? 'background:#fff;' : ''}">
+                      ${hideDeletedInTimeline ? 'ON' : 'OFF'}
                     </button>
                   </div>
                 </div>
 
-                <!-- 3. 部屋名（ペア名）の変更 -->
-                <div style="background:#fff; border:1px solid #f0dfe4; border-radius:12px; padding:12px; margin-bottom:12px;">
-                  <b style="font-size:13px; color:#3e3438; display:block; margin-bottom:6px;">🏠 部屋名（ペア名）の変更</b>
+                <!-- 3. 部屋名変更 -->
+                <div class="settings-subpanel">
+                  <b style="font-size:13px; color:#211C1F; display:block; margin-bottom:6px;">🏠 部屋名の変更</b>
                   <div style="display:flex; gap:6px;">
-                    <input id="adminPairName" class="field" style="margin:0; flex:1;" value="${esc(pairName)}" placeholder="ふたりの家計">
-                    <button id="btnUpdatePairName" type="button" class="dark" style="padding:0 14px; font-size:12px;">変更</button>
+                    <input id="adminPairName" class="field" style="margin:0; flex:1; background:#fff; min-width:0;" value="${esc(pairName)}" placeholder="ふたりの家計">
+                    <button id="btnUpdatePairName" type="button" class="dark" style="padding:0 14px; font-size:12px; white-space:nowrap; flex-shrink:0;">変更</button>
                   </div>
                 </div>
 
-                <!-- 4. サブスク自動追加の強制リセット＆今すぐ実行 -->
-                <div style="background:#fff; border:1px solid #f0dfe4; border-radius:12px; padding:12px; margin-bottom:12px;">
-                  <b style="font-size:13px; color:#3e3438; display:block; margin-bottom:4px;">🔄 サブスク自動追加の管理・強制実行</b>
-                  <div class="muted" style="font-size:11px; margin-bottom:8px;">今月の自動追加済みフラグをリセットして、今すぐ自動追加を再判定させたい時に使います。</div>
-                  <button id="btnResetSubFlags" type="button" class="ghost full" style="font-size:12px; padding:8px; border-radius:8px; font-weight:bold;">今月のサブスク処理済フラグをリセットして再実行</button>
+                <!-- 4. サブスク再判定 -->
+                <div class="settings-subpanel">
+                  <b style="font-size:13px; color:#211C1F; display:block; margin-bottom:4px;">🔄 サブスク自動追加の再実行</b>
+                  <div class="muted" style="font-size:11px; margin-bottom:8px;">今月の自動追加フラグをリセットして再判定します。</div>
+                  <button id="btnResetSubFlags" type="button" class="ghost full" style="background:#fff; font-size:12px; padding:9px; border-radius:9px;">フラグをリセットして再実行</button>
                 </div>
 
-                <!-- 5. 全データバックアップ（CSV書き出し）＆キャッシュクリア -->
-                <div style="background:#fff; border:1px solid #f0dfe4; border-radius:12px; padding:12px; margin-bottom:12px;">
-                  <b style="font-size:13px; color:#3e3438; display:block; margin-bottom:6px;">📦 データ書き出し・キャッシュ管理</b>
+                <!-- 5. CSV・キャッシュ -->
+                <div class="settings-subpanel">
+                  <b style="font-size:13px; color:#211C1F; display:block; margin-bottom:8px;">📦 データ書き出し・キャッシュ</b>
                   <div style="display:flex; gap:6px;">
-                    <button id="btnExportCsv" type="button" class="ghost" style="flex:1; font-size:12px; padding:8px; border-radius:8px; font-weight:bold;">📥 履歴をCSV出力</button>
-                    <button id="btnClearLocalCache" type="button" class="ghost" style="flex:1; font-size:12px; padding:8px; border-radius:8px; font-weight:bold;">🧹 キャッシュ再構築</button>
+                    <button id="btnExportCsv" type="button" class="ghost" style="flex:1; background:#fff; font-size:12px; padding:9px; border-radius:9px;">📥 CSV出力</button>
+                    <button id="btnClearLocalCache" type="button" class="ghost" style="flex:1; background:#fff; font-size:12px; padding:9px; border-radius:9px;">🧹 キャッシュ再構築</button>
                   </div>
                 </div>
 
-                <!-- 6. 一括初期化（危険な操作） -->
-                <div style="background:#fff5f7; border:1px solid #ffccd5; border-radius:12px; padding:12px;">
-                  <b style="font-size:13px; color:#a13c52; display:block; margin-bottom:8px;">⚠️ 全データの一括初期化</b>
-                  <button id="delAllBtn" class="ghost full" style="color:#a13c52; background:#ffe5e9; margin-bottom: 8px; font-size:12px; padding:10px;">すべての支出・精算履歴を完全に削除する</button>
-                  <button id="resetUtilsBtn" class="ghost full" style="color:#a13c52; background:#ffe5e9; font-size:12px; padding:10px;">水道代・光熱費の記録をすべて削除</button>
+                <!-- 6. 一括初期化 -->
+                <div style="background:#FCF4F6; border:1px solid #F1D9E0; border-radius:14px; padding:13px;">
+                  <b style="font-size:13px; color:#C43E57; display:block; margin-bottom:8px;">⚠️ 全データの一括初期化</b>
+                  <button id="delAllBtn" class="ghost full" style="color:#C43E57; background:#fff; border-color:#F1D9E0; margin-bottom: 8px; font-size:12px; padding:10px;">すべての支出・精算履歴を完全に削除</button>
+                  <button id="resetUtilsBtn" class="ghost full" style="color:#C43E57; background:#fff; border-color:#F1D9E0; font-size:12px; padding:10px;">水道代・光熱費の記録をすべて削除</button>
                 </div>
               </div>
             `;
           })() : ''}
         </div>
-        <button id="out" class="ghost full">ログアウト</button>
 
-        <div style="text-align: center; margin-top: 30px; font-size: 11px; color: #9A8E94; font-weight: 600;">
-          App Version: 1.24.2<br>（オンライン同時接続・iPhone自動再接続 安定化版）
+        <button id="out" class="ghost full" style="background:#fff; color:#665C62; margin-top: 6px; padding: 13px;">ログアウト</button>
+
+        <div style="text-align: center; margin-top: 24px; font-size: 11px; color: #988D93; font-weight: 600;">
+          PairPocket v1.25.0
         </div>
       </section>
 
@@ -2047,26 +1681,26 @@ async function render(isInitial = false) {
       </nav>
 
       <!-- モーダル1：支出の編集 -->
-      <div id="editModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
-        <div class="card" style="width: 100%; max-width: 400px; max-height: 85vh; display: flex; flex-direction: column; overflow-y: auto;">
-          <h2 style="margin-top: 0; font-size: 20px;">支出を編集</h2>
+      <div id="editModal" class="modal-backdrop">
+        <div class="modal-sheet">
+          <h2 style="margin-top: 0; font-size: 18px;">支出を編集</h2>
           <input type="hidden" id="editId">
-          <label class="muted">金額</label>
-          <div class="money" style="margin-bottom: 15px;">
+          <label class="field-label">金額</label>
+          <div class="money" style="margin-bottom: 14px;">
             <span>¥</span>
-            <input type="number" id="editAmount" class="field" style="margin:0;">
+            <input type="number" id="editAmount" style="margin:0;">
           </div>
-          <label class="muted">内容</label>
-          <input id="editTitle" class="field" style="margin-bottom: 15px;">
-          <label class="muted">カテゴリー</label>
-          <select id="editCat" class="field" style="margin-bottom: 15px;">
+          <label class="field-label">内容</label>
+          <input id="editTitle" class="field">
+          <label class="field-label">カテゴリー</label>
+          <select id="editCat" class="field">
             <option value="">カテゴリーなし</option>
             ${['食費', '外食', '生活', '家賃', '光熱費', '交通', '娯楽', '旅行', 'その他'].map(x => `<option value="${x}">${x}</option>`).join('')}
           </select>
-          <label class="muted">日付</label>
-          <input type="date" id="editDate" class="field" style="margin-bottom: 15px;">
-          <label class="muted">立て替えた人</label>
-          <select id="editPayer" class="field" style="margin-bottom: 20px;">
+          <label class="field-label">日付</label>
+          <input type="date" id="editDate" class="field">
+          <label class="field-label">立て替えた人</label>
+          <select id="editPayer" class="field" style="margin-bottom: 18px;">
             ${members.map((m) => `<option value="${m.user_id}">${esc(name(m.user_id))}</option>`).join('')}
           </select>
           <div style="display: flex; gap: 10px;">
@@ -2077,53 +1711,53 @@ async function render(isInitial = false) {
       </div>
 
       <!-- モーダル2：レシート仕分け -->
-      <div id="receiptModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
-        <div class="card" style="width: 100%; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; position: relative;">
-          <h2 style="margin-top: 0; font-size: 20px;">レシート仕分け</h2>
-          <div id="receiptLoading" style="text-align: center; padding: 40px 0; color: #a76777; font-weight: bold; font-size: 16px;">
-            <div style="font-size: 40px; margin-bottom: 15px;">🤖📸</div>
-            AIで解析中...<br><span style="font-size: 12px; font-weight: normal;">圧縮送信で高速化！</span>
+      <div id="receiptModal" class="modal-backdrop">
+        <div class="modal-sheet" style="overflow: hidden;">
+          <h2 style="margin-top: 0; font-size: 18px;">レシート仕分け</h2>
+          <div id="receiptLoading" style="text-align: center; padding: 36px 0; color: #665C62; font-weight: 700; font-size: 15px;">
+            <div style="font-size: 36px; margin-bottom: 12px;">📷</div>
+            AIでレシートを読み取り中…
           </div>
-          <div id="receiptItemsWrap" style="display: none; flex: 1; overflow-y: auto; margin-bottom: 15px; padding-right: 5px;">
-            <p class="muted" style="margin-top: 0; font-size: 11px;">ワンタップで負担割合を変更できます。</p>
+          <div id="receiptItemsWrap" style="display: none; flex: 1; overflow-y: auto; margin-bottom: 14px;">
+            <p class="muted" style="margin-top: 0; font-size: 11px;">品目ごとに負担割合をタップで切り替えできます。</p>
             <div id="receiptItemsList"></div>
           </div>
-          <div id="receiptFooter" style="display: none; border-top: 1px solid #f0dfe4; padding-top: 15px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-              <span style="font-weight: bold; color: #59464e;">相手への請求額:</span>
-              <b id="receiptTotalAmount" style="color: #e7617d; font-size: 24px;">¥0</b>
+          <div id="receiptFooter" style="display: none; border-top: 1px solid #EDE8EB; padding-top: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+              <span style="font-weight: 700; color: #665C62; font-size: 13px;">相手への請求額</span>
+              <b id="receiptTotalAmount" style="color: #E2556F; font-size: 24px; font-variant-numeric:tabular-nums;">¥0</b>
             </div>
             <div style="display: flex; gap: 10px;">
               <button id="closeReceiptBtn" class="ghost full">キャンセル</button>
-              <button id="applyReceiptBtn" class="primary full">決定して入力</button>
+              <button id="applyReceiptBtn" class="primary full">決定して反映</button>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- モーダル2.5：履歴の金額タップで開く「レシート内訳詳細」 -->
-      <div id="receiptDetailModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
-        <div class="card" style="width: 100%; max-width: 420px; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden;">
-          <h2 id="receiptDetailTitle" style="margin-top: 0; margin-bottom: 4px; font-size: 18px;">🧾 レシート内訳</h2>
-          <div id="receiptDetailMeta" class="muted" style="font-size: 12px; margin-bottom: 12px;"></div>
-          <div id="receiptDetailList" style="flex: 1; overflow-y: auto; border-top: 1px solid #f0dfe4; padding-top: 8px; margin-bottom: 12px;"></div>
-          <div id="receiptDetailSummary" style="background: #fffafb; border: 1px solid #f0dfe4; border-radius: 12px; padding: 12px; margin-bottom: 14px;"></div>
+      <!-- モーダル2.5：履歴詳細 -->
+      <div id="receiptDetailModal" class="modal-backdrop">
+        <div class="modal-sheet" style="overflow: hidden;">
+          <h2 id="receiptDetailTitle" style="margin-top: 0; margin-bottom: 4px; font-size: 17px;">内訳詳細</h2>
+          <div id="receiptDetailMeta" class="muted" style="font-size: 11.5px; margin-bottom: 12px;"></div>
+          <div id="receiptDetailList" style="flex: 1; overflow-y: auto; border-top: 1px solid #EDE8EB; padding-top: 8px; margin-bottom: 12px;"></div>
+          <div id="receiptDetailSummary" style="background: #F7F4F6; border: 1px solid #EDE8EB; border-radius: 14px; padding: 12px; margin-bottom: 14px;"></div>
           <button id="closeReceiptDetailBtn" class="primary full">閉じる</button>
         </div>
       </div>
 
-      <!-- ★ モーダル3：🪄 AIスマート文章・音声入力（マイクボタン搭載） -->
-      <div id="smartInputModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
-        <div class="card" style="width: 100%; max-width: 420px; max-height: 85vh; display: flex; flex-direction: column; overflow-y: auto;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-            <h2 style="margin: 0; font-size: 18px;">🪄 AI文章・音声入力</h2>
-            <button id="btnVoiceInput" type="button" class="ghost" style="padding: 6px 12px; font-size: 12px; background: #ffe5e9; color: #e7617d; border-radius: 14px; font-weight: bold;">🎙️ マイクで話す</button>
+      <!-- モーダル3：🪄 AI文章・音声入力 -->
+      <div id="smartInputModal" class="modal-backdrop">
+        <div class="modal-sheet">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px;">
+            <h2 style="margin: 0; font-size: 17px;">🪄 AI文章・音声入力</h2>
+            <button id="btnVoiceInput" type="button" class="ghost" style="padding: 6px 12px; font-size: 12px; background: #FCEEF1; color: #C43E57; border-color: #F1D9E0; border-radius: 999px; white-space: nowrap;">🎙️ マイクで話す</button>
           </div>
-          <p class="muted" style="margin-top: 0; font-size: 11px;">「🎙️マイクで話す」を押して話し、もう一度押すと終了（最大60秒）。AIが文字起こしして、自動で支払いを分解します。</p>
+          <p class="muted" style="margin-top: 0; font-size: 11.5px;">複数の支払いをまとめて文章や音声で入力できます。</p>
           <textarea id="smartInputText" class="field" rows="3" placeholder="例：私がランチ2400円払って割り勘。相手がガソリン代3600円出して割り勘。" style="resize: none;"></textarea>
-          <button id="btnRunSmartParse" class="dark full" style="margin-bottom: 12px;">🤖 AIで解析する</button>
+          <button id="btnRunSmartParse" class="dark full" style="margin-bottom: 12px;">AIで解析する</button>
           
-          <div id="smartInputPreview" style="display: none; border-top: 1px solid #f0dfe4; padding-top: 12px; margin-bottom: 12px;"></div>
+          <div id="smartInputPreview" style="display: none; border-top: 1px solid #EDE8EB; padding-top: 12px; margin-bottom: 12px;"></div>
 
           <div style="display: flex; gap: 10px;">
             <button id="closeSmartInputBtn" class="ghost full">閉じる</button>
@@ -2133,10 +1767,10 @@ async function render(isInitial = false) {
       </div>
 
       <!-- モーダル4：📊 AI家計簿アナリスト -->
-      <div id="aiReportModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
-        <div class="card" style="width: 100%; max-width: 420px; max-height: 85vh; display: flex; flex-direction: column; overflow-y: auto;">
-          <h2 style="margin-top: 0; font-size: 19px;">🤖 AI家計簿アナリスト</h2>
-          <div id="aiReportContent" style="font-size: 14px; line-height: 1.7; color: #3e3438; margin-bottom: 18px;"></div>
+      <div id="aiReportModal" class="modal-backdrop">
+        <div class="modal-sheet">
+          <h2 style="margin-top: 0; font-size: 17px;">🤖 AI家計診断レポート</h2>
+          <div id="aiReportContent" style="font-size: 13.5px; line-height: 1.75; color: #211C1F; margin-bottom: 16px;"></div>
           <button id="closeAiReportBtn" class="primary full">閉じる</button>
         </div>
       </div>
@@ -2146,7 +1780,6 @@ async function render(isInitial = false) {
   wire(stateObj, myName, partnerName, partnerMember?.user_id || uid, filteredExpenses, name);
   setTab(currentTab); 
   showCalc();
-  updateOnlineBadges();
   renderMiniGameTabs();
 
   if (isInitial && currentTab === 'entry') {
@@ -2240,6 +1873,8 @@ function renderMiniGameTabs() {
 // ==========================================
 // ゲーム①（新）：💞 以心伝心チャレンジ（AIシンクロ採点）
 // ==========================================
+// ゲーム①：💞 以心伝心チャレンジ（AIシンクロ採点）
+// ==========================================
 function renderSyncGame(myName: string, partnerName: string) {
   const area = q('#syncGameArea');
   if (!area) return;
@@ -2255,8 +1890,8 @@ function renderSyncGame(myName: string, partnerName: string) {
 
   area.innerHTML = `
     <div style="margin-bottom:12px;">
-      <div style="font-weight:800; font-size:15px; color:#e7617d; margin-bottom:4px;">💞 ふたりの以心伝心チャレンジ</div>
-      <div class="muted" style="font-size:11px;">同じお題にせーので回答！AIがふたりのシンクロ率（0〜100%）を採点します。</div>
+      <div style="font-weight:800; font-size:15px; color:#211C1F; margin-bottom:3px;">💞 以心伝心チャレンジ</div>
+      <div class="muted" style="font-size:11.5px;">同じお題にそれぞれ秘密で回答！AIがふたりのシンクロ率を採点します。</div>
     </div>
 
     <div style="margin-bottom:10px;">
@@ -2264,50 +1899,45 @@ function renderSyncGame(myName: string, partnerName: string) {
     </div>
 
     <div style="display:flex; gap:6px; margin-bottom:14px;">
-      <input id="syncTopicInput" class="field" style="margin:0; flex:1;" value="${esc(syncTopic)}" placeholder="お題を入力">
-      <button id="btnSetSyncTopic" class="dark" style="padding:0 12px; font-size:12px; white-space:nowrap;">お題変更</button>
+      <input id="syncTopicInput" class="field" style="margin:0; flex:1; min-width:0;" value="${esc(syncTopic)}" placeholder="お題を入力">
+      <button id="btnSetSyncTopic" class="dark" style="padding:0 13px; font-size:12px; white-space:nowrap; flex-shrink:0;">お題変更</button>
     </div>
 
-    <div style="background:#fffafb; border:2px solid #ffccd5; border-radius:14px; padding:12px; margin-bottom:14px; text-align:center;">
-      <div class="muted" style="font-size:11px; font-weight:bold;">現在のお題</div>
-      <div style="font-size:16px; font-weight:900; color:#3e3438; margin-top:4px;">「${esc(syncTopic)}」</div>
+    <div style="background:#FCF8F9; border:1px solid #F1D9E0; border-radius:14px; padding:13px; margin-bottom:14px; text-align:center;">
+      <div class="muted" style="font-size:10.5px; font-weight:700;">現在のお題</div>
+      <div style="font-size:15.5px; font-weight:800; color:#211C1F; margin-top:4px;">「${esc(syncTopic)}」</div>
     </div>
 
-    <!-- 自分の回答 -->
-    <div style="background:#fff; border:1px solid #f0dfe4; border-radius:12px; padding:12px; margin-bottom:10px;">
+    <!-- 1人目の回答 -->
+    <div style="background:#F7F4F6; border:1px solid #EDE8EB; border-radius:14px; padding:12px; margin-bottom:10px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-        <b style="font-size:13px; color:#e7617d;">👤 ${esc(myName)}（あなた）の回答</b>
-        <span style="font-size:11px; font-weight:bold; color:${syncMyAns ? '#4caf50' : '#9b8d93'};">${syncMyAns ? '🔒 入力ロック済み' : '未入力'}</span>
+        <b style="font-size:13px; color:#E2556F;">${esc(myName)} の回答</b>
+        <span style="font-size:11px; font-weight:700; color:${syncMyAns ? '#1F6E50' : '#988D93'};">${syncMyAns ? '🔒 入力済み' : '未入力'}</span>
       </div>
       <div style="display:flex; gap:6px;">
-        <input id="syncMyAnsInput" class="field" style="margin:0; flex:1;" type="${syncMyAns && !syncRevealed ? 'password' : 'text'}" value="${esc(syncMyAns)}" placeholder="秘密で答えを入力...">
-        <button id="btnLockSyncAns" class="primary" style="padding:0 14px; font-size:12px; white-space:nowrap;">🔒 決定</button>
+        <input id="syncMyAnsInput" class="field" style="margin:0; flex:1; background:#fff; min-width:0;" type="${syncMyAns && !syncRevealed ? 'password' : 'text'}" value="${esc(syncMyAns)}" placeholder="秘密で答えを入力...">
+        <button id="btnLockSyncAns" class="primary" style="padding:0 14px; font-size:12px; white-space:nowrap; flex-shrink:0;">決定</button>
       </div>
     </div>
 
-    <!-- 相手の回答ステータス（＋1台プレイ用入力） -->
-    <div style="background:#fff; border:1px solid #f0dfe4; border-radius:12px; padding:12px; margin-bottom:12px;">
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <b style="font-size:13px; color:#5995bd;">👤 ${esc(partnerName)}の回答</b>
-        <span style="font-size:12px; font-weight:bold; color:${syncPartnerAns ? '#4caf50' : '#9b8d93'};">
-          ${syncPartnerAns ? (syncRevealed ? `「${esc(syncPartnerAns)}」` : '🔒 通信で受信済み！') : '⏳ 相手のスマホからの入力待ち...'}
-        </span>
+    <!-- 2人目の回答 -->
+    <div style="background:#F7F4F6; border:1px solid #EDE8EB; border-radius:14px; padding:12px; margin-bottom:12px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <b style="font-size:13px; color:#4A7FA7;">${esc(partnerName)} の回答</b>
+        <span style="font-size:11px; font-weight:700; color:${syncPartnerAns ? '#1F6E50' : '#988D93'};">${syncPartnerAns ? '🔒 入力済み' : '未入力'}</span>
       </div>
-      <details style="margin-top:8px;">
-        <summary style="font-size:11px; color:#9b8d93; cursor:pointer;">📱 1台のスマホで2人遊ぶ場合はこちらをタップ</summary>
-        <div style="display:flex; gap:6px; margin-top:6px;">
-          <input id="syncPartnerLocalInput" class="field" style="margin:0; flex:1;" type="${syncPartnerAns && !syncRevealed ? 'password' : 'text'}" value="${esc(syncPartnerAns)}" placeholder="${esc(partnerName)}の答えを入力...">
-          <button id="btnLockPartnerLocalAns" class="dark" style="padding:0 12px; font-size:11px; white-space:nowrap;">セット</button>
-        </div>
-      </details>
+      <div style="display:flex; gap:6px;">
+        <input id="syncPartnerLocalInput" class="field" style="margin:0; flex:1; background:#fff; min-width:0;" type="${syncPartnerAns && !syncRevealed ? 'password' : 'text'}" value="${esc(syncPartnerAns)}" placeholder="秘密で答えを入力...">
+        <button id="btnLockPartnerLocalAns" class="dark" style="padding:0 14px; font-size:12px; white-space:nowrap; flex-shrink:0;">決定</button>
+      </div>
     </div>
 
     ${syncMyAns && syncPartnerAns && !syncRevealed ? `
-      <button id="btnRunSyncJudge" class="primary full" style="padding:14px; font-size:15px;">🤖 AIでシンクロ率を採点する！</button>
+      <button id="btnRunSyncJudge" class="primary full" style="padding:13px; font-size:14px;">AIでシンクロ率を採点する</button>
     ` : ''}
 
     ${syncResultHtml ? `
-      <div style="margin-top:12px; background:#fff0f3; border:2px solid #ff8fa3; border-radius:14px; padding:14px; text-align:center;">
+      <div style="margin-top:12px; background:#FCF4F6; border:1.5px solid #F1D9E0; border-radius:16px; padding:16px; text-align:center;">
         ${syncResultHtml}
       </div>
     ` : ''}
@@ -2320,7 +1950,6 @@ function renderSyncGame(myName: string, partnerName: string) {
       syncPartnerAns = '';
       syncResultHtml = '';
       syncRevealed = false;
-      sendGameEvent('sync_topic', { topic: syncTopic });
       renderSyncGame(myName, partnerName);
     };
   });
@@ -2333,42 +1962,41 @@ function renderSyncGame(myName: string, partnerName: string) {
     syncPartnerAns = '';
     syncResultHtml = '';
     syncRevealed = false;
-    sendGameEvent('sync_topic', { topic: syncTopic });
     renderSyncGame(myName, partnerName);
-    showToast('💞 お題を相手のスマホにも同期しました');
   });
 
   q('#btnLockSyncAns')?.addEventListener('click', () => {
     const a = val('#syncMyAnsInput').trim();
-    if (!a) return showToast('⚠️ 回答を入力してください', true);
+    if (!a) return showToast('回答を入力してください', true);
     syncMyAns = a;
-    sendGameEvent('sync_ans', { ans: syncMyAns });
     renderSyncGame(myName, partnerName);
     if (syncMyAns && syncPartnerAns && !syncRevealed) {
-      evaluateSyncGame(myName, partnerName, true);
+      evaluateSyncGame(myName, partnerName);
     } else {
-      showToast('🔒 回答をロックして相手に通知しました！');
+      showToast('回答をロックしました');
     }
   });
 
   q('#btnLockPartnerLocalAns')?.addEventListener('click', () => {
     const a = val('#syncPartnerLocalInput').trim();
-    if (!a) return;
+    if (!a) return showToast('回答を入力してください', true);
     syncPartnerAns = a;
     renderSyncGame(myName, partnerName);
     if (syncMyAns && syncPartnerAns && !syncRevealed) {
-      evaluateSyncGame(myName, partnerName, true);
+      evaluateSyncGame(myName, partnerName);
+    } else {
+      showToast('回答をロックしました');
     }
   });
 
   q('#btnRunSyncJudge')?.addEventListener('click', () => {
-    evaluateSyncGame(myName, partnerName, true);
+    evaluateSyncGame(myName, partnerName);
   });
 }
 
-async function evaluateSyncGame(myName: string, partnerName: string, broadcast: boolean) {
+async function evaluateSyncGame(myName: string, partnerName: string) {
   syncRevealed = true;
-  syncResultHtml = `<div style="padding:12px; color:#a76777; font-weight:bold;">🤖💞 AIがふたりのシンクロ率を判定中...</div>`;
+  syncResultHtml = `<div style="padding:12px; color:#665C62; font-weight:700;">AIがふたりのシンクロ率を判定中…</div>`;
   renderSyncGame(myName, partnerName);
 
   try {
@@ -2382,38 +2010,35 @@ ${partnerName}の回答: 「${syncPartnerAns}」
     const data = JSON.parse(resText);
     syncScore = Number(data.score) || 0;
     syncResultHtml = `
-      <div style="font-size:12px; color:#a76777; font-weight:bold;">ふたりのシンクロ率</div>
-      <div style="font-size:38px; font-weight:900; color:#e7617d; margin:4px 0;">${syncScore}%</div>
-      <div style="font-size:15px; font-weight:800; color:#3e3438; margin-bottom:10px;">✨ ${esc(data.title || '')}</div>
+      <div class="muted" style="font-size:11.5px; font-weight:700;">ふたりのシンクロ率</div>
+      <div style="font-size:38px; font-weight:800; color:#E2556F; margin:4px 0; font-variant-numeric:tabular-nums;">${syncScore}%</div>
+      <div style="font-size:15px; font-weight:800; color:#211C1F; margin-bottom:10px;">${esc(data.title || '')}</div>
       <div style="display:flex; gap:8px; margin-bottom:10px; text-align:left;">
-        <div style="flex:1; background:#fff; padding:8px 10px; border-radius:10px; border:1px solid #f0dfe4;">
-          <div style="font-size:10px; color:#e7617d; font-weight:bold;">${esc(myName)}</div>
-          <div style="font-size:13px; font-weight:bold; color:#3e3438;">${esc(syncMyAns)}</div>
+        <div style="flex:1; background:#fff; padding:9px 10px; border-radius:10px; border:1px solid #EDE8EB;">
+          <div style="font-size:10px; color:#E2556F; font-weight:700;">${esc(myName)}</div>
+          <div style="font-size:13px; font-weight:700; color:#211C1F; margin-top:2px;">${esc(syncMyAns)}</div>
         </div>
-        <div style="flex:1; background:#fff; padding:8px 10px; border-radius:10px; border:1px solid #f0dfe4;">
-          <div style="font-size:10px; color:#5995bd; font-weight:bold;">${esc(partnerName)}</div>
-          <div style="font-size:13px; font-weight:bold; color:#3e3438;">${esc(syncPartnerAns)}</div>
+        <div style="flex:1; background:#fff; padding:9px 10px; border-radius:10px; border:1px solid #EDE8EB;">
+          <div style="font-size:10px; color:#4A7FA7; font-weight:700;">${esc(partnerName)}</div>
+          <div style="font-size:13px; font-weight:700; color:#211C1F; margin-top:2px;">${esc(syncPartnerAns)}</div>
         </div>
       </div>
-      <div style="font-size:13px; color:#59464e; line-height:1.5;">${esc(data.comment || '')}</div>
+      <div style="font-size:13px; color:#665C62; line-height:1.55;">${esc(data.comment || '')}</div>
     `;
   } catch {
     const exact = syncMyAns.trim() === syncPartnerAns.trim();
     syncScore = exact ? 100 : 50;
     syncResultHtml = `
-      <div style="font-size:28px; font-weight:900; color:#e7617d;">${syncScore}%</div>
+      <div style="font-size:30px; font-weight:800; color:#E2556F;">${syncScore}%</div>
       <div style="font-size:13px; margin-top:6px;">${esc(myName)}: 「${esc(syncMyAns)}」 / ${esc(partnerName)}: 「${esc(syncPartnerAns)}」</div>
     `;
   }
 
   renderSyncGame(myName, partnerName);
-  if (broadcast) {
-    sendGameEvent('sync_result', { html: syncResultHtml, score: syncScore });
-  }
 }
 
 // ==========================================
-// ゲーム②（新）：⏱️ 体内時計 10.00秒ピタリ止めバトル
+// ゲーム②：⏱️ 体内時計 10.00秒ピタリ止めバトル
 // ==========================================
 function startTimerChallengeLocal() {
   if (timerAnimId) cancelAnimationFrame(timerAnimId);
@@ -2433,10 +2058,10 @@ function startTimerChallengeLocal() {
     if (disp) {
       if (elapsed < 3.0) {
         disp.textContent = `${elapsed.toFixed(2)} 秒`;
-        disp.style.color = '#3e3438';
+        disp.style.color = '#211C1F';
       } else {
         disp.textContent = '??.?? 秒';
-        disp.style.color = '#e7617d';
+        disp.style.color = '#E2556F';
       }
     }
     if (elapsed < 25 && (timerMyTime === null || timerPartnerTime === null)) {
@@ -2462,53 +2087,53 @@ function renderTimerChallenge(myName: string, partnerName: string) {
     const pDiff = timerPartnerTime !== null ? Math.abs(timerPartnerTime - 10.0) : 999;
     let winnerBanner = '';
     if (bothDone) {
-      if (Math.abs(myDiff - pDiff) < 0.005) winnerBanner = '🎉 奇跡の同タイム引き分け！！';
-      else if (myDiff < pDiff) winnerBanner = `🏆 ${esc(myName)}の勝ち！！（誤差 ${myDiff.toFixed(2)}秒）`;
-      else winnerBanner = `🏆 ${esc(partnerName)}の勝ち！！（誤差 ${pDiff.toFixed(2)}秒）`;
+      if (Math.abs(myDiff - pDiff) < 0.005) winnerBanner = '🎉 奇跡の同タイム引き分け！';
+      else if (myDiff < pDiff) winnerBanner = `🏆 ${esc(myName)} の勝ち！（誤差 ${myDiff.toFixed(2)}秒）`;
+      else winnerBanner = `🏆 ${esc(partnerName)} の勝ち！（誤差 ${pDiff.toFixed(2)}秒）`;
     }
 
     resultHtml = `
       <div style="display:flex; gap:8px; margin-top:14px;">
-        <div style="flex:1; background:#fff0f3; border:1px solid #ffccd5; border-radius:12px; padding:10px;">
-          <div style="font-size:11px; color:#e7617d; font-weight:bold;">${esc(myName)}</div>
-          <div style="font-size:18px; font-weight:900; color:#3e3438; margin-top:2px;">
-            ${timerMyTime !== null ? (bothDone ? `${timerMyTime.toFixed(2)}秒` : '🔒 ストップ済！') : '計測中...'}
+        <div style="flex:1; background:#FCF4F6; border:1px solid #F1D9E0; border-radius:12px; padding:10px;">
+          <div style="font-size:11px; color:#E2556F; font-weight:700;">${esc(myName)}</div>
+          <div style="font-size:17px; font-weight:800; color:#211C1F; margin-top:2px; font-variant-numeric:tabular-nums;">
+            ${timerMyTime !== null ? (bothDone ? `${timerMyTime.toFixed(2)}秒` : '🔒 ストップ済') : '計測中…'}
           </div>
           ${bothDone && timerMyTime !== null ? `<div class="muted" style="font-size:11px;">誤差 ${myDiff.toFixed(2)}秒</div>` : ''}
         </div>
-        <div style="flex:1; background:#f0f4f8; border:1px solid #d0e1f0; border-radius:12px; padding:10px;">
-          <div style="font-size:11px; color:#5995bd; font-weight:bold;">${esc(partnerName)}</div>
-          <div style="font-size:18px; font-weight:900; color:#3e3438; margin-top:2px;">
-            ${timerPartnerTime !== null ? (bothDone ? `${timerPartnerTime.toFixed(2)}秒` : '🔒 ストップ済！') : '計測中...'}
+        <div style="flex:1; background:#F2F6FA; border:1px solid #D5E4F0; border-radius:12px; padding:10px;">
+          <div style="font-size:11px; color:#4A7FA7; font-weight:700;">${esc(partnerName)}</div>
+          <div style="font-size:17px; font-weight:800; color:#211C1F; margin-top:2px; font-variant-numeric:tabular-nums;">
+            ${timerPartnerTime !== null ? (bothDone ? `${timerPartnerTime.toFixed(2)}秒` : '🔒 ストップ済') : '計測中…'}
           </div>
           ${bothDone && timerPartnerTime !== null ? `<div class="muted" style="font-size:11px;">誤差 ${pDiff.toFixed(2)}秒</div>` : ''}
         </div>
       </div>
-      ${winnerBanner ? `<div style="margin-top:12px; padding:12px; background:#fffafb; border:2px solid #e7617d; border-radius:12px; font-weight:900; font-size:16px; color:#e7617d;">${winnerBanner}</div>` : ''}
+      ${winnerBanner ? `<div style="margin-top:12px; padding:12px; background:#FCF4F6; border:1.5px solid #E2556F; border-radius:12px; font-weight:800; font-size:15px; color:#C43E57;">${winnerBanner}</div>` : ''}
     `;
   }
 
   area.innerHTML = `
-    <div style="font-weight:800; font-size:15px; color:#e7617d; margin-bottom:4px;">⏱️ 体内時計 10.00秒ピタリ止めバトル</div>
-    <div class="muted" style="font-size:11px; margin-bottom:14px;">3秒経過で数字が「??.??」に隠れます。体内時計で10.00秒に近い方が勝ち！</div>
+    <div style="font-weight:800; font-size:15px; color:#211C1F; margin-bottom:4px;">⏱️ 10.00秒ピタリ止めバトル</div>
+    <div class="muted" style="font-size:11.5px; margin-bottom:14px;">3秒経過で数字が隠れます。10.00秒に近い方が勝ち！</div>
 
-    <div style="background:#fffafb; border:2px solid #f0dfe4; border-radius:16px; padding:24px 12px; margin-bottom:14px;">
-      <div id="timerClockDisplay" style="font-size:38px; font-weight:900; color:#3e3438; font-variant-numeric:tabular-nums;">
-        ${timerGameState === 'idle' ? '0.00 秒' : (bothDone ? '10.00秒 判定完了！' : '??.?? 秒')}
+    <div style="background:#F7F4F6; border:1px solid #EDE8EB; border-radius:16px; padding:24px 12px; margin-bottom:14px;">
+      <div id="timerClockDisplay" style="font-size:36px; font-weight:800; color:#211C1F; font-variant-numeric:tabular-nums;">
+        ${timerGameState === 'idle' ? '0.00 秒' : (bothDone ? '判定完了' : '??.?? 秒')}
       </div>
     </div>
 
     ${timerGameState === 'running' ? `
-      <div style="display:flex; flex-direction:column; gap:8px;">
-        <button id="btnStopMyTimer" class="primary full" style="padding:18px; font-size:18px;" ${timerMyTime !== null ? 'disabled' : ''}>
-          ${timerMyTime !== null ? '🔒 あなたのタイム確定済み' : `🛑 ストップ！（${esc(myName)}）`}
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+        <button id="btnStopMyTimer" class="primary" style="padding:18px 8px; font-size:15px;" ${timerMyTime !== null ? 'disabled' : ''}>
+          ${timerMyTime !== null ? '🔒 確定済' : `🛑 ${esc(myName)}`}
         </button>
-        <button id="btnStopPartnerLocalTimer" class="ghost full" style="padding:10px; font-size:12px; color:#5995bd;" ${timerPartnerTime !== null ? 'disabled' : ''}>
-          ${timerPartnerTime !== null ? `🔒 ${esc(partnerName)}も確定済み` : `📱 1台で遊ぶ用：${esc(partnerName)}のストップ`}
+        <button id="btnStopPartnerLocalTimer" class="dark" style="padding:18px 8px; font-size:15px; background:#4A7FA7;" ${timerPartnerTime !== null ? 'disabled' : ''}>
+          ${timerPartnerTime !== null ? '🔒 確定済' : `🛑 ${esc(partnerName)}`}
         </button>
       </div>
     ` : `
-      <button id="btnStartTimerGame" class="primary full" style="padding:14px; font-size:16px;">🚀 スタート！（両方のスマホで同時開始）</button>
+      <button id="btnStartTimerGame" class="primary full" style="padding:13px; font-size:15px;">スタート</button>
     `}
 
     ${resultHtml}
@@ -2516,13 +2141,11 @@ function renderTimerChallenge(myName: string, partnerName: string) {
 
   q('#btnStartTimerGame')?.addEventListener('click', () => {
     startTimerChallengeLocal();
-    sendGameEvent('timer_start', {});
   });
 
   q('#btnStopMyTimer')?.addEventListener('click', () => {
     if (timerGameState !== 'running' || timerMyTime !== null) return;
     timerMyTime = Number(((performance.now() - timerStartAt) / 1000).toFixed(2));
-    sendGameEvent('timer_stop', { time: timerMyTime });
     renderTimerChallenge(myName, partnerName);
   });
 
@@ -2534,7 +2157,7 @@ function renderTimerChallenge(myName: string, partnerName: string) {
 }
 
 // ==========================================
-// ゲーム③（新）：🎈 風船チキンレース
+// ゲーム③：🎈 風船チキンレース
 // ==========================================
 function renderBalloonGame(myName: string, partnerName: string) {
   const area = q('#balloonGameArea');
@@ -2546,39 +2169,38 @@ function renderBalloonGame(myName: string, partnerName: string) {
   const currentTurnName = isMyTurn ? myName : partnerName;
   const loserName = balloonLoserUid === uid ? myName : partnerName;
 
-  const scale = Math.min(2.6, 1 + balloonCount * 0.055);
+  const scale = Math.min(2.5, 1 + balloonCount * 0.055);
   const dangerRatio = Math.min(1, balloonCount / 28);
-  const bgHue = Math.round(350 - dangerRatio * 10);
 
   area.innerHTML = `
-    <div style="font-weight:800; font-size:15px; color:#e7617d; margin-bottom:4px;">🎈 風船チキンレース</div>
-    <div class="muted" style="font-size:11px; margin-bottom:12px;">交互に1〜3回空気を入れよう！限界を超えて割ってしまった人の負け💥</div>
+    <div style="font-weight:800; font-size:15px; color:#211C1F; margin-bottom:4px;">🎈 風船チキンレース</div>
+    <div class="muted" style="font-size:11.5px; margin-bottom:12px;">交互に1〜3回空気を入れよう！割ってしまった人の負け💥</div>
 
-    <div style="background:#fffafb; border:2px solid #f0dfe4; border-radius:16px; height:190px; display:flex; flex-direction:column; align-items:center; justify-content:center; margin-bottom:12px; overflow:hidden; position:relative;">
-      <div style="font-size:52px; transform:scale(${balloonBoom ? 2.2 : scale}); transition:transform 0.25s cubic-bezier(0.34,1.56,0.64,1); filter:drop-shadow(0 6px 12px rgba(231,97,125,${0.2 + dangerRatio * 0.5}));">
+    <div style="background:#F7F4F6; border:1px solid #EDE8EB; border-radius:16px; height:180px; display:flex; flex-direction:column; align-items:center; justify-content:center; margin-bottom:12px; overflow:hidden;">
+      <div style="font-size:50px; transform:scale(${balloonBoom ? 2.1 : scale}); transition:transform 0.25s cubic-bezier(0.34,1.56,0.64,1); filter:drop-shadow(0 6px 12px rgba(226,85,111,${0.18 + dangerRatio * 0.45}));">
         ${balloonBoom ? '💥' : '🎈'}
       </div>
-      <div style="margin-top:26px; font-weight:900; font-size:14px; color:hsl(${bgHue}, 70%, 45%);">
-        現在: ${balloonCount} プッシュ
+      <div style="margin-top:24px; font-weight:800; font-size:13.5px; color:#665C62; font-variant-numeric:tabular-nums;">
+        現在 ${balloonCount} プッシュ
       </div>
     </div>
 
     ${balloonBoom ? `
-      <div style="padding:12px; background:#ffe5e9; border:2px solid #bf4f68; border-radius:12px; color:#a13c52; font-weight:900; font-size:15px; margin-bottom:12px;">
-        💥 ドカン！！ ${esc(loserName)}が割ってしまった！負け！
+      <div style="padding:12px; background:#FCEEF1; border:1.5px solid #E2556F; border-radius:12px; color:#C43E57; font-weight:800; font-size:14.5px; margin-bottom:12px;">
+        💥 ドカン！ ${esc(loserName)} の負け！
       </div>
     ` : `
-      <div style="margin-bottom:10px; font-weight:bold; font-size:14px; color:${isMyTurn ? '#e7617d' : '#5995bd'};">
-        👉 現在の番：<b>${esc(currentTurnName)}</b> ${isMyTurn ? '（あなたの番！）' : '（相手の操作待ち / 1台ならそのまま押せます）'}
+      <div style="margin-bottom:10px; font-weight:700; font-size:13.5px; color:${isMyTurn ? '#E2556F' : '#4A7FA7'};">
+        現在の番：<b>${esc(currentTurnName)}</b>
       </div>
-      <div style="display:flex; gap:8px; margin-bottom:12px;">
-        <button class="balloon-push-btn primary" data-push="1" style="flex:1; padding:14px 0; font-size:15px;">💨 +1回</button>
-        <button class="balloon-push-btn primary" data-push="2" style="flex:1; padding:14px 0; font-size:15px; background:#ff758f;">💨 +2回</button>
-        <button class="balloon-push-btn primary" data-push="3" style="flex:1; padding:14px 0; font-size:15px; background:#e7617d;">🔥 +3回</button>
+      <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; margin-bottom:12px;">
+        <button class="balloon-push-btn primary" data-push="1" style="padding:13px 0; font-size:14px;">+1回</button>
+        <button class="balloon-push-btn primary" data-push="2" style="padding:13px 0; font-size:14px;">+2回</button>
+        <button class="balloon-push-btn primary" data-push="3" style="padding:13px 0; font-size:14px;">+3回</button>
       </div>
     `}
 
-    <button id="btnResetBalloon" class="dark full" style="padding:12px;">🔄 新しい風船でスタート（相手にも同期）</button>
+    <button id="btnResetBalloon" class="dark full" style="padding:12px;">新しい風船でスタート</button>
   `;
 
   area.querySelectorAll('.balloon-push-btn').forEach((btn: any) => {
@@ -2593,12 +2215,6 @@ function renderBalloonGame(myName: string, partnerName: string) {
       } else {
         balloonTurnUid = actorUid === uid ? partnerUid : uid;
       }
-      sendGameEvent('balloon_push', {
-        count: balloonCount,
-        boom: balloonBoom,
-        loserUid: balloonLoserUid,
-        nextTurnUid: balloonTurnUid
-      });
       renderBalloonGame(myName, partnerName);
     };
   });
@@ -2609,13 +2225,12 @@ function renderBalloonGame(myName: string, partnerName: string) {
     balloonBoom = false;
     balloonLoserUid = '';
     balloonTurnUid = uid;
-    sendGameEvent('balloon_init', { limit: balloonLimit, turnUid: balloonTurnUid });
     renderBalloonGame(myName, partnerName);
   });
 }
 
 // ==========================================
-// ゲーム④（新）：⭕ 消えるマルバツゲーム（最大3個ルール）
+// ゲーム④：⭕ 消えるマルバツゲーム（最大3個ルール）
 // ==========================================
 function renderTttGame(myName: string, partnerName: string) {
   const area = q('#tttGameArea');
@@ -2626,7 +2241,6 @@ function renderTttGame(myName: string, partnerName: string) {
   const isMyTurn = tttTurnUid === uid;
   const turnName = isMyTurn ? `${myName} (⭕)` : `${partnerName} (❌)`;
 
-  // 各プレイヤーの最古のコマ（3個置いている場合、次に消えるコマ）を特定
   const myMarks = tttMoves.filter(m => m.uid === uid);
   const partnerMarks = tttMoves.filter(m => m.uid !== uid);
   const myVanishIdx = myMarks.length >= 3 ? myMarks[0].idx : -1;
@@ -2638,9 +2252,9 @@ function renderTttGame(myName: string, partnerName: string) {
     const mark = !move ? '' : (isMine ? '⭕' : '❌');
     const willVanish = idx === myVanishIdx || idx === partnerVanishIdx;
     return `
-      <button class="ttt-cell" data-idx="${idx}" style="height:76px; border-radius:14px; border:2px ${willVanish ? 'dashed #ff8fa3' : 'solid #f0dfe4'}; background:${move ? (willVanish ? '#fff5f7' : '#fff') : '#fffafb'}; font-size:28px; cursor:pointer; display:flex; flex-direction:column; align-items:center; justify-content:center; opacity:${willVanish ? '0.55' : '1'}; position:relative;">
+      <button class="ttt-cell" data-idx="${idx}" style="height:74px; border-radius:14px; border:1.5px ${willVanish ? 'dashed #E2556F' : 'solid #EDE8EB'}; background:${move ? (willVanish ? '#FCF4F6' : '#fff') : '#F7F4F6'}; font-size:26px; cursor:pointer; display:flex; flex-direction:column; align-items:center; justify-content:center; opacity:${willVanish ? '0.58' : '1'}; position:relative;">
         <span>${mark}</span>
-        ${willVanish ? '<span style="font-size:9px; color:#bf4f68; font-weight:bold; position:absolute; bottom:4px;">次消える</span>' : ''}
+        ${willVanish ? '<span style="font-size:9px; color:#C43E57; font-weight:700; position:absolute; bottom:4px;">次消える</span>' : ''}
       </button>
     `;
   }).join('');
@@ -2648,24 +2262,24 @@ function renderTttGame(myName: string, partnerName: string) {
   const winnerName = tttWinnerUid === uid ? myName : partnerName;
 
   area.innerHTML = `
-    <div style="font-weight:800; font-size:15px; color:#e7617d; margin-bottom:4px;">⭕ 消えるマルバツゲーム</div>
-    <div class="muted" style="font-size:11px; margin-bottom:10px;">盤面に置けるのは1人3個まで！4個目を置くと一番古い自分の印が消えるから引き分けなし！</div>
+    <div style="font-weight:800; font-size:15px; color:#211C1F; margin-bottom:4px;">⭕ 消えるマルバツゲーム</div>
+    <div class="muted" style="font-size:11.5px; margin-bottom:10px;">置けるのは1人3個まで！4個目を置くと一番古い自分の印が消えます。</div>
 
     ${tttWinnerUid ? `
-      <div style="padding:10px; background:#e8f5e9; border:2px solid #4caf50; border-radius:12px; color:#2e7d32; font-weight:900; font-size:15px; margin-bottom:12px;">
-        🏆 ${esc(winnerName)}の勝利！！
+      <div style="padding:10px; background:#EBF7F2; border:1.5px solid #2D8A65; border-radius:12px; color:#1F6E50; font-weight:800; font-size:14.5px; margin-bottom:12px;">
+        🏆 ${esc(winnerName)} の勝利！
       </div>
     ` : `
-      <div style="margin-bottom:10px; font-weight:bold; font-size:14px; color:${isMyTurn ? '#e7617d' : '#5995bd'};">
-        👉 手番：<b>${esc(turnName)}</b>
+      <div style="margin-bottom:10px; font-weight:700; font-size:13.5px; color:${isMyTurn ? '#E2556F' : '#4A7FA7'};">
+        手番：<b>${esc(turnName)}</b>
       </div>
     `}
 
-    <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-bottom:14px;">
+    <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; margin-bottom:14px;">
       ${cellsHtml}
     </div>
 
-    <button id="btnResetTtt" class="dark full" style="padding:12px;">🔄 盤面をリセット（相手にも同期）</button>
+    <button id="btnResetTtt" class="dark full" style="padding:12px;">盤面をリセット</button>
   `;
 
   const winLines = [
@@ -2695,12 +2309,6 @@ function renderTttGame(myName: string, partnerName: string) {
       } else {
         tttTurnUid = moverUid === uid ? partnerUid : uid;
       }
-
-      sendGameEvent('ttt_move', {
-        moves: tttMoves,
-        nextTurnUid: tttTurnUid,
-        winnerUid: tttWinnerUid
-      });
       renderTttGame(myName, partnerName);
     };
   });
@@ -2709,15 +2317,13 @@ function renderTttGame(myName: string, partnerName: string) {
     tttMoves = [];
     tttWinnerUid = '';
     tttTurnUid = uid;
-    sendGameEvent('ttt_init', { turnUid: tttTurnUid });
     renderTttGame(myName, partnerName);
   });
 }
 
-function initBombGame(broadcast = true) {
+function initBombGame(_broadcast = false) {
   const bombIndex = Math.floor(Math.random() * 9);
   bombTiles = Array(9).fill(null).map((_, i) => ({ hasBomb: i === bombIndex, opened: false }));
-  if (broadcast) sendGameEvent('bomb_init', { tiles: bombTiles });
   renderBombGame();
 }
 
@@ -2725,7 +2331,7 @@ function renderBombGame() {
   const grid = q('#bombGrid');
   if (!grid) return;
   grid.innerHTML = bombTiles.map((t, i) => `
-    <button class="bomb-tile" data-idx="${i}" style="height:70px; border-radius:12px; border:2px solid #f0dfe4; background:${t.opened ? (t.hasBomb ? '#bf4f68' : '#e8f5e9') : '#fff'}; font-size:24px; cursor:pointer; display:flex; align-items:center; justify-content:center;">
+    <button class="bomb-tile" data-idx="${i}" style="height:68px; border-radius:13px; border:1.5px solid #EDE8EB; background:${t.opened ? (t.hasBomb ? '#E2556F' : '#EBF7F2') : '#F7F4F6'}; font-size:24px; cursor:pointer; display:flex; align-items:center; justify-content:center;">
       ${t.opened ? (t.hasBomb ? '💣' : '⚪️') : '🎁'}
     </button>
   `).join('');
@@ -2735,12 +2341,11 @@ function renderBombGame() {
       const idx = Number(b.dataset.idx);
       if (bombTiles[idx].opened) return;
       bombTiles[idx].opened = true;
-      sendGameEvent('bomb_open', { idx });
       if (bombTiles[idx].hasBomb) {
-        q('#bombMsg').innerHTML = '💥 <b style="color:#bf4f68;">ドカン！！爆発した人の負け！</b>';
+        q('#bombMsg').innerHTML = '💥 <b style="color:#C43E57;">ドカン！爆発した人の負け！</b>';
         bombTiles.forEach(tile => tile.opened = true);
       } else {
-        q('#bombMsg').textContent = 'セーフ！次は相手の番です';
+        q('#bombMsg').textContent = 'セーフ！次の人の番です';
       }
       renderBombGame();
     };
@@ -2854,12 +2459,8 @@ function renderQuizArea(myName: string, partnerName: string, forceEvaluate = fal
       if (quizRevealed) return;
       const player = b.dataset.player;
       const idx = Number(b.dataset.idx);
-      if (player === 'P1') {
-        quizPickP1 = idx;
-        sendGameEvent('quiz_pick', { pick: idx });
-      } else {
-        quizPickP2 = idx;
-      }
+      if (player === 'P1') quizPickP1 = idx;
+      else quizPickP2 = idx;
 
       if (quizPickP1 !== null && quizPickP2 !== null) {
         evaluateQuiz();
@@ -2887,14 +2488,14 @@ function renderReceiptItems() {
     else if (item.split === 'partner') amt = item.price;
     total += amt;
     
-    const btnActive = 'background:#ff8fa3; color:#fff; box-shadow:0 4px 10px #ff8fa344; border:none;';
-    const btnInactive = 'background:#fff0f3; color:#a76777; border:none;';
+    const btnActive = 'background:#211C1F; color:#fff; border-color:#211C1F;';
+    const btnInactive = 'background:#F7F4F6; color:#665C62; border-color:#EDE8EB;';
     
     return `
-      <div style="padding:12px 0; border-bottom:1px solid #f5e9ed;">
+      <div style="padding:12px 0; border-bottom:1px solid #EDE8EB;">
         <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-          <span style="font-weight:bold; font-size:14px; color:#3e3438;">${esc(item.name)}</span>
-          <span class="muted" style="font-weight:bold;">¥${item.price}</span>
+          <span style="font-weight:700; font-size:13.5px; color:#211C1F;">${esc(item.name)}</span>
+          <span class="muted" style="font-weight:700; font-variant-numeric:tabular-nums;">¥${item.price}</span>
         </div>
         <div style="display:flex; gap:6px;">
           <button class="split-btn ghost" data-index="${i}" data-val="mine" style="flex:1; padding:8px; font-size:11px; ${item.split === 'mine' ? btnActive : btnInactive}">自分(0%)</button>
@@ -2938,23 +2539,15 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
   document.querySelectorAll('.manual-sync-btn').forEach((b: any) => {
     b.onclick = () => manualSync();
   });
-  document.querySelectorAll('.partner-online-badge').forEach((el: any) => {
-    el.onclick = async () => {
-      if (liveStatus !== 'connected') {
-        showToast('🔄 オンラインサーバーへ再接続中…');
-        await setupRealtime(true);
-        return;
-      }
-      sendLivePing();
-      recomputePartnerOnline();
-      if (partnerOnline) {
-        showToast(`🟢 ${partnerName}とリアルタイム接続中！そのまま対戦できます`);
-      } else if (sameAccountOtherDevice) {
-        showToast('ℹ️ 別端末も同じアカウントでログイン中です（別アカウント同士でオンラインになります）');
-      } else {
-        showToast(`🟡 通信サーバー接続OK！${partnerName}がアプリを開くと緑に変わります`);
-      }
-    };
+  q('#copyInviteBtn')?.addEventListener('click', async () => {
+    const codeText = q('#copyInviteBtn')?.previousElementSibling?.textContent?.trim();
+    if (!codeText || codeText === '------') return;
+    try {
+      await navigator.clipboard.writeText(codeText);
+      showToast('招待コードをコピーしました');
+    } catch {
+      showToast(`招待コード: ${codeText}`);
+    }
   });
   q('#menuBtn')?.addEventListener('click', () => q('#menuDrawer').classList.remove('hide'));
   q('#closeDrawerBtn')?.addEventListener('click', () => q('#menuDrawer').classList.add('hide'));
@@ -3340,11 +2933,10 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
   });
 
   // ----------------------------------------
-  // 機能②：🎮 ミニゲーム（オンライン2台同時接続＆1台対戦）
+  // 機能②：🎮 ミニゲーム（1台で2人遊べる7種ゲーム）
   // ----------------------------------------
   const switchMiniGame = (mode: typeof miniGameMode) => {
     miniGameMode = mode;
-    sendGameEvent('switch_mode', { mode });
     renderMiniGameTabs();
   };
 
@@ -3357,8 +2949,8 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
   q('#btnGameQuiz')?.addEventListener('click', () => switchMiniGame('quiz'));
 
   q('#bombResetBtn')?.addEventListener('click', () => {
-    q('#bombMsg').textContent = '交互にタップ！ハズレ(💣)で負け！';
-    initBombGame(true);
+    q('#bombMsg').textContent = '交互にタップ！ハズレ(💣)で負け';
+    initBombGame();
   });
 
   document.querySelectorAll('.quiz-theme-chip').forEach((chip: any) => {
@@ -3371,14 +2963,14 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
     quizScoreP2 = 0;
     q('#quizScoreP1Label').textContent = '0点';
     q('#quizScoreP2Label').textContent = '0点';
-    showToast('🔄 スコアを0点にリセットしました');
+    showToast('スコアを0点にリセットしました');
   });
 
   q('#btnGenerateQuiz')?.addEventListener('click', async () => {
     const theme = val('#quizThemeInput').trim() || '雑学';
     const diff = val('#quizDiffSelect');
     const btn = q('#btnGenerateQuiz');
-    btn.textContent = '🤖 クイズを作成中...';
+    btn.textContent = 'クイズを作成中…';
     btn.disabled = true;
 
     try {
@@ -3389,12 +2981,11 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
       quizPickP1 = null;
       quizPickP2 = null;
       quizRevealed = false;
-      sendGameEvent('quiz_new', { quiz: currentQuiz });
       renderQuizArea(myName, partnerName);
     } catch (err: any) {
       alert(err.message);
     } finally {
-      btn.textContent = '🎲 次のクイズを出題！(相手の画面にも同期)';
+      btn.textContent = '次のクイズを出題する';
       btn.disabled = false;
     }
   });
@@ -4031,13 +3622,10 @@ function save() {
 }
 
 async function logout() {
-  sendLiveBye();
   localStorage.removeItem('pp_cache');
   hasBooted = false;
   uid = '';
   pair = '';
-  partnerOnline = false;
-  liveStatus = 'idle';
   await supabase.auth.signOut();
   boot();
 }
@@ -4046,19 +3634,13 @@ function val(s: string) { return q(s)?.value || ''; }
 function fail(s: string) { app.innerHTML = `<main class="app"><div class="notice">${esc(s)}</div></main>`; }
 
 supabase.auth.onAuthStateChange((event, session) => {
-  if (session?.access_token) {
-    try { supabase.realtime.setAuth(session.access_token); } catch {}
-  }
   if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
     if (session && !hasBooted) boot();
-    else if (session && pair && liveStatus !== 'connected') setupRealtime(true);
   } else if (event === 'SIGNED_OUT') {
-    sendLiveBye();
     hasBooted = false;
-    uid = ''; pair = ''; partnerOnline = false; liveStatus = 'idle';
+    uid = ''; pair = '';
     authView();
   }
 });
 
-// キャッシュ起動時でも必ず Realtime 接続と最新同期を走らせる
 boot();
