@@ -83,6 +83,9 @@ let isProcessingSubs = false;
 
 // 🎙️ 音声で入力欄に自動反映した際の詳細データ保持用
 let pendingVoiceDetail: { type: 'voice', rawText: string, note: string, totalAmount: number, splitText: string } | null = null;
+// 💧 水道・光熱費 AI画像読込用の状態
+let isScanningUtil = false;
+let pendingUtilScanItems: { type: 'water' | 'energy', month: string, amount: number, note?: string }[] = [];
 
 // 🔐 管理者モード用の状態（パスワード013000認証つき）
 let isAdminMode = false;
@@ -491,9 +494,9 @@ async function handleVoiceStop() {
   }
 }
 
-// モーダル表示中・録音中・10秒タイマー中など、再描画すると操作が途切れる状態か
+// モーダル表示中・録音中・10秒タイマー中・画像解析中など、再描画すると操作が途切れる状態か
 function isUiBusy() {
-  if (isListening || isTranscribing || timerGameState === 'running') return true;
+  if (isListening || isTranscribing || isScanningUtil || timerGameState === 'running') return true;
   return ['#editModal', '#receiptModal', '#receiptDetailModal', '#smartInputModal', '#aiReportModal']
     .some(id => q(id)?.style.display === 'flex');
 }
@@ -1711,14 +1714,21 @@ async function render(isInitial = false) {
           ${graphHtml}
         </div>
         <div class="card">
-          <h2>記録を追加</h2>
-          <div style="display: flex; gap: 6px; margin-top: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
+            <h2 style="margin: 0;">記録を追加</h2>
+            <button id="btnUtilScan" type="button" class="ghost" style="padding: 7px 12px; font-size: 12px; background: #FCEEF1; color: #C43E57; border-color: #F1D9E0; border-radius: 999px; font-weight: 700; white-space: nowrap; flex-shrink: 0;">📷 画像から読込</button>
+            <input type="file" id="utilPhotoInput" accept="image/*" style="display:none;">
+          </div>
+          <div id="utilScanStatus" class="muted" style="font-size: 11.5px; margin-bottom: 8px;">検針票・請求書・電気/ガス/水道アプリのスクショから自動入力できます</div>
+          <div id="utilScanBatchWrap" style="display: none; background: #FCF8F9; border: 1px solid #F1D9E0; border-radius: 14px; padding: 12px; margin-bottom: 12px;"></div>
+          <div style="display: flex; gap: 6px; margin-top: 6px;">
             <input type="month" id="utilMonth" class="field" style="margin:0; flex:1;" value="${new Date().toISOString().slice(0,7)}">
             <select id="utilType" class="field" style="margin:0; width: 108px;">
               <option value="water">水道代</option><option value="energy">光熱費</option>
             </select>
           </div>
-          <input type="number" id="utilAmount" class="field" placeholder="金額を入力" style="margin-top: 10px;">
+          <input type="number" id="utilAmount" class="field" placeholder="金額を入力" style="margin-top: 10px; margin-bottom: 8px;">
+          <input type="text" id="utilNote" class="field" placeholder="内訳メモ（任意・例：電気代、ガス代、上下水道）" style="margin-top: 0;">
           <button id="addUtilBtn" class="dark full">追加する</button>
         </div>
         <div class="card list-card">
@@ -1727,7 +1737,7 @@ async function render(isInitial = false) {
             <span class="muted" style="font-size:11px;">${utils.length}件</span>
           </div>
           <div class="list-card-body">
-            ${utils.slice().reverse().map((u:any) => `<div class="expense"><div class="expense-left"><div class="cat-avatar" style="background:${u.type==='water'?'#EEF6FF':'#FFF4EB'}; border-color:${u.type==='water'?'#D5E7FA':'#F8DFCA'};">${u.type==='water'?'💧':'⚡'}</div><div><b style="font-size:14px; color:#211C1F;">${u.type === 'water' ? '水道代' : '光熱費'}</b><div class="muted" style="font-size:11.5px; margin-top: 2px;">${u.month}</div></div></div><div class="expense-right"><b style="font-size: 15px; font-variant-numeric:tabular-nums;">${yen(u.amount)}</b><br><button class="del-util ghost" data-id="${u.id}" style="color:#C43E57; padding:3px 9px; font-size:11px; margin-top:4px; border-radius:7px;">削除</button></div></div>`).join('') || '<p class="muted" style="text-align:center; padding:20px 0;">まだ記録はありません</p>'}
+            ${utils.slice().reverse().map((u:any) => `<div class="expense"><div class="expense-left"><div class="cat-avatar" style="background:${u.type==='water'?'#EEF6FF':'#FFF4EB'}; border-color:${u.type==='water'?'#D5E7FA':'#F8DFCA'};">${u.type==='water'?'💧':'⚡'}</div><div style="min-width:0;"><b style="font-size:14px; color:#211C1F;">${u.type === 'water' ? '水道代' : '光熱費'}${u.note ? ` <span style="font-size:11px; font-weight:600; color:#665C62;">(${esc(u.note)})</span>` : ''}</b><div class="muted" style="font-size:11.5px; margin-top: 2px;">${u.month}</div></div></div><div class="expense-right"><b style="font-size: 15px; font-variant-numeric:tabular-nums;">${yen(u.amount)}</b><br><button class="del-util ghost" data-id="${u.id}" style="color:#C43E57; padding:3px 9px; font-size:11px; margin-top:4px; border-radius:7px;">削除</button></div></div>`).join('') || '<p class="muted" style="text-align:center; padding:20px 0;">まだ記録はありません</p>'}
           </div>
         </div>
       </section>
@@ -1905,7 +1915,7 @@ async function render(isInitial = false) {
         <button id="out" class="ghost full" style="background:#fff; color:#665C62; margin-top: 6px; padding: 13px;">ログアウト</button>
 
         <div style="text-align: center; margin-top: 24px; font-size: 11px; color: #988D93; font-weight: 600;">
-          PairPocket v1.26.0
+          PairPocket v1.27.0
         </div>
       </section>
 
@@ -3483,14 +3493,121 @@ function wire(state: any, myName: string, partnerName: string, partnerUid: strin
 
   q('#utilModeToggle')?.addEventListener('click', () => { utilViewMode = utilViewMode === 'trend' ? 'average' : 'trend'; render(); });
 
+  // 💧 水道・光熱費：検針票・請求書・明細スクショからAI自動読取
+  q('#btnUtilScan')?.addEventListener('click', () => {
+    if (isScanningUtil) return;
+    q('#utilPhotoInput')?.click();
+  });
+
+  q('#utilPhotoInput')?.addEventListener('change', async (e: any) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    isScanningUtil = true;
+    pendingUtilScanItems = [];
+    const btn = q('#btnUtilScan');
+    const statusEl = q('#utilScanStatus');
+    const batchWrap = q('#utilScanBatchWrap');
+    if (btn) { btn.textContent = '🤖 解析中…'; btn.disabled = true; }
+    if (statusEl) { statusEl.textContent = 'AIが画像から請求月・種別・金額を読み取っています…'; statusEl.style.color = '#E2556F'; }
+    if (batchWrap) batchWrap.style.display = 'none';
+
+    try {
+      const base64Data = await compressImageToBase64(file, 900);
+      const todayYM = new Date().toISOString().slice(0, 7);
+      const prompt = `この画像は水道代・電気代・ガス代などの検針票、請求書、またはアプリの料金明細スクリーンショットです。
+含まれている請求データをすべて抽出し、JSONオブジェクトのみ出力せよ。
+ルール:
+- typeは水道・下水道なら"water"、電気・ガス・光熱費なら"energy"。
+- monthは対象年月を"YYYY-MM"形式（例:"${todayYM}"）で出力。年が省略されている場合は直近の年月（現在:${todayYM}）を推測すること。
+- amountは請求金額（税込合計の整数、カンマや円は不要）。
+- noteは「電気代」「ガス代」「上下水道」「電気＋ガス」など短い内訳ラベル（10文字以内）。
+- 読み取れない場合は {"items":[]} を出力せよ。
+出力例: {"items":[{"type":"energy","month":"2026-11","amount":6480,"note":"電気代"}]}`;
+
+      const resText = await callGeminiAPI([
+        { text: prompt },
+        { inlineData: { mimeType: 'image/jpeg', data: base64Data } }
+      ], true);
+      const parsedObj = JSON.parse(resText);
+      const rawItems = Array.isArray(parsedObj) ? parsedObj : (parsedObj?.items || []);
+      const items = rawItems
+        .map((it: any) => ({
+          type: (it?.type === 'water' ? 'water' : 'energy') as 'water' | 'energy',
+          month: typeof it?.month === 'string' && /^\d{4}-\d{2}$/.test(it.month) ? it.month : todayYM,
+          amount: Math.round(Number(it?.amount) || 0),
+          note: typeof it?.note === 'string' ? it.note.trim() : ''
+        }))
+        .filter((it: any) => it.amount > 0);
+
+      if (items.length === 0) {
+        if (statusEl) { statusEl.textContent = '⚠️ 金額や明細を読み取れませんでした。明るい場所で撮り直すか、スクショをお試しください'; statusEl.style.color = '#C43E57'; }
+        showToast('画像から料金を読み取れませんでした', true);
+        return;
+      }
+
+      pendingUtilScanItems = items;
+      const first = items[0];
+      if (q('#utilMonth')) q('#utilMonth').value = first.month;
+      if (q('#utilType')) q('#utilType').value = first.type;
+      if (q('#utilAmount')) q('#utilAmount').value = String(first.amount);
+      if (q('#utilNote')) q('#utilNote').value = first.note || '';
+
+      if (items.length === 1) {
+        if (statusEl) {
+          statusEl.textContent = `✅ 読取完了：${first.month} ${first.type === 'water' ? '水道代' : '光熱費'}${first.note ? `(${first.note})` : ''} ${yen(first.amount)} を入力欄に反映しました！`;
+          statusEl.style.color = '#1F6E50';
+        }
+        showToast('📷 画像から金額を入力欄に反映しました！');
+      } else {
+        if (statusEl) {
+          statusEl.textContent = `✅ ${items.length}件の料金を読み取りました！まとめて追加できます。`;
+          statusEl.style.color = '#1F6E50';
+        }
+        if (batchWrap) {
+          batchWrap.style.display = 'block';
+          batchWrap.innerHTML = `
+            <div style="font-size:11.5px; font-weight:700; color:#C43E57; margin-bottom:8px;">📷 画像から検出した${items.length}件の料金</div>
+            ${items.map((it: any) => `
+              <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid #F1D9E0; font-size:12.5px;">
+                <span><b>${it.type === 'water' ? '💧 水道代' : '⚡ 光熱費'}</b>${it.note ? ` (${esc(it.note)})` : ''} <span class="muted">${it.month}</span></span>
+                <b style="font-variant-numeric:tabular-nums;">${yen(it.amount)}</b>
+              </div>
+            `).join('')}
+            <button id="btnAddAllScannedUtils" type="button" class="primary full" style="margin-top:10px; padding:10px; font-size:13px;">この${items.length}件をまとめて記録する</button>
+          `;
+          q('#btnAddAllScannedUtils')?.addEventListener('click', () => {
+            const utils = JSON.parse(localStorage.getItem(`utils_${pair}`) || '[]');
+            pendingUtilScanItems.forEach((it, idx) => {
+              utils.push({ id: `${Date.now()}_${idx}`, month: it.month, type: it.type, amount: it.amount, note: it.note || '' });
+            });
+            localStorage.setItem(`utils_${pair}`, JSON.stringify(utils));
+            pendingUtilScanItems = [];
+            showToast(`💧 ${items.length}件まとめて記録しました！`);
+            render();
+          });
+        }
+        showToast(`📷 ${items.length}件の料金を読み取りました！`);
+      }
+    } catch (err: any) {
+      if (statusEl) { statusEl.textContent = `⚠️ ${err?.message || '解析に失敗しました'}`; statusEl.style.color = '#C43E57'; }
+      alert(err?.message || '画像の解析に失敗しました');
+    } finally {
+      isScanningUtil = false;
+      e.target.value = '';
+      if (btn) { btn.textContent = '📷 画像から読込'; btn.disabled = false; }
+    }
+  });
+
   q('#addUtilBtn')?.addEventListener('click', () => {
-    const month = val('#utilMonth'); const type = val('#utilType'); const amount = Number(val('#utilAmount'));
+    const month = val('#utilMonth'); const type = val('#utilType'); const amount = Number(val('#utilAmount')); const note = val('#utilNote').trim();
     if (!month || !amount) { showToast('⚠️ 月と金額を入力してください', true); return; }
     const utils = JSON.parse(localStorage.getItem(`utils_${pair}`) || '[]');
-    utils.push({ id: Date.now().toString(), month, type, amount });
+    utils.push({ id: Date.now().toString(), month, type, amount, note });
     localStorage.setItem(`utils_${pair}`, JSON.stringify(utils)); 
+    pendingUtilScanItems = [];
     showToast('💧 記録しました');
     q('#utilAmount').value = '';
+    if (q('#utilNote')) q('#utilNote').value = '';
     render();
   });
 
